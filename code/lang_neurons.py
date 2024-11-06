@@ -23,7 +23,7 @@ class LangNeuron:
         self.model_name_srt = self.model_name.split("/")[-1] 
         self.method = scoring_method
         self.cwd = Path.cwd()
-        self.lang_neuron_path = Path(self.cwd, f"outputs/lang_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
+        self.lang_neuron_path = Path(self.cwd, f"outputs/lang_neurons/{self.model_name_srt}/all_act/lang_neuron_data.pkl")
         self.lang_neuron_path.parent.mkdir(parents=True, exist_ok=True)
         
         if self.lang_neuron_path.exists():
@@ -51,7 +51,7 @@ class LangNeuron:
         for lang in self.lang_list:
             rel_obj = NeuronRelevance(model_name=self.model_name, device=self.device, lang=lang, quant_config=self.quant_config, scoring_method="act_prob_zero")
             rel = rel_obj.get_relevance_data(batch_size=None, data_frac=None)
-            act_prob_dict[lang] = rel["mean_rel"].to(self.device) # (L, 4d)
+            act_prob_dict[lang] = rel["mean_rel"][self.method].to(self.device) # (L, 4d)
             sum_act_prob += act_prob_dict[lang]
         
         norm_act_prob_dict = {}
@@ -99,7 +99,7 @@ class LangNeuron:
         for lang in self.lang_list:
             rel_obj = NeuronRelevance(model_name=self.model_name, device=self.device, lang=lang, quant_config=self.quant_config, scoring_method=self.method)
             rel = rel_obj.get_relevance_data(batch_size=None, data_frac=None)
-            rel_dict[lang] = rel["mean_rel"].to(self.device) # (L, 4d)
+            rel_dict[lang] = rel["mean_rel"][self.method].to(self.device) # (L, 4d)
         
         self.L = rel_dict[self.lang_list[0]].shape[0]
         self.int_d = rel_dict[self.lang_list[0]].shape[1]
