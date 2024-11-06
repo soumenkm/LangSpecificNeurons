@@ -23,7 +23,7 @@ class LangNeuron:
         self.model_name_srt = self.model_name.split("/")[-1] 
         self.method = scoring_method
         self.cwd = Path.cwd()
-        self.lang_neuron_path = Path(self.cwd, f"outputs/lang_neurons/{self.model_name_srt}/all_act/lang_neuron_data.pkl")
+        self.lang_neuron_path = Path(self.cwd, f"outputs/lang_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
         self.lang_neuron_path.parent.mkdir(parents=True, exist_ok=True)
         
         if self.lang_neuron_path.exists():
@@ -49,9 +49,9 @@ class LangNeuron:
         sum_act_prob = 0
         act_prob_dict = {}
         for lang in self.lang_list:
-            rel_obj = NeuronRelevance(model_name=self.model_name, device=self.device, lang=lang, quant_config=self.quant_config, scoring_method="act_prob_zero")
+            rel_obj = NeuronRelevance(model_name=self.model_name, device=self.device, lang=lang, quant_config=self.quant_config, scoring_method="all_act")
             rel = rel_obj.get_relevance_data(batch_size=None, data_frac=None)
-            act_prob_dict[lang] = rel["mean_rel"][self.method].to(self.device) # (L, 4d)
+            act_prob_dict[lang] = rel["mean_rel"]["act_prob_zero"].to(self.device) # (L, 4d)
             sum_act_prob += act_prob_dict[lang]
         
         norm_act_prob_dict = {}
@@ -97,7 +97,7 @@ class LangNeuron:
     def _get_set_indep_neurons(self) -> dict:
         rel_dict = {}
         for lang in self.lang_list:
-            rel_obj = NeuronRelevance(model_name=self.model_name, device=self.device, lang=lang, quant_config=self.quant_config, scoring_method=self.method)
+            rel_obj = NeuronRelevance(model_name=self.model_name, device=self.device, lang=lang, quant_config=self.quant_config, scoring_method="all_act")
             rel = rel_obj.get_relevance_data(batch_size=None, data_frac=None)
             rel_dict[lang] = rel["mean_rel"][self.method].to(self.device) # (L, 4d)
         
@@ -225,11 +225,11 @@ class LangNeuron:
 
 def main(model_name: str, device: torch.device) -> None:
     methods = ["act_prob_zero", "act_abs_mean", "act_prob_mean", "act_prob_95p", "lape/set1"]
-    lang_neuron = LangNeuron(device=device, model_name=model_name, lang_list=lang_map["set1"], scoring_method="act_prob_zero")
+    lang_neuron = LangNeuron(device=device, model_name=model_name, lang_list=lang_map["set4"], scoring_method="lape/set4")
     lang_neuron.get_lang_specific_neurons_dist(is_plot=True)
     lang_neuron.get_layerwise_neurons_dist(is_plot=True)
     lang_neuron.get_neurons_overlap(is_plot=True)
-    lang_neuron.plot_3_lang_overlap_venn(languages=["en", "vi", "id"])
+    lang_neuron.plot_3_lang_overlap_venn(languages=["en", "hi", "vi"])
     
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
