@@ -36,14 +36,14 @@ class Evaluator:
     def _get_intervene_config(self, intervene_lang: str, is_activate: bool) -> dict:
         """intervene_lang = yy"""
         lang = intervene_lang
-        lang_neuron_path = Path(Path.cwd(), f"outputs1/lang_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
+        lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
         if lang_neuron_path.exists():
             lang_neuron = pickle.load(open(lang_neuron_path, "rb"))
             print(f"The lang neurons data is loaded from {lang_neuron_path}")
         else:
             raise ValueError(f"{lang_neuron_path} doesn't exist!")
 
-        act_data_path = Path(Path.cwd(), f"outputs1/activation/{self.model_name_srt}/act_stat/rel_{lang}.pkl")
+        act_data_path = Path(Path.cwd(), f"outputs/activation/{self.model_name_srt}/act_stat/rel_{lang}.pkl")
         if act_data_path.exists():
             act_data = pickle.load(open(act_data_path, "rb"))
             print(f"The activation data is loaded from {act_data_path}")
@@ -134,7 +134,7 @@ if __name__ == "__main__":
         "ckpt_name": f"checkpoint-{args.ckpt_id}/pytorch_model.bin",
         "eval_lang": args.eval_lang,
         "batch_size": 8,
-        "eval_frac": 0.01,
+        "eval_frac": 1.0,
         "is_zero_shot": bool(args.is_zero_shot),
         "intervene_by": args.intervene_by
     }

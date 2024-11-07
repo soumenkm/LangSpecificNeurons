@@ -1,11 +1,10 @@
-import os, json, pickle, torch
+import os, json, pickle, torch, wandb
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "6"
+    wandb.login()
+    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
     
 torch.manual_seed(42)
 from pathlib import Path
-import wandb
-wandb.login()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 from transformers import AutoTokenizer, TrainingArguments, Trainer, DefaultDataCollator, get_linear_schedule_with_warmup, BitsAndBytesConfig, TrainerCallback
 from dataset import XNLIDatasetHF
@@ -183,8 +182,8 @@ class LoRAFineTuner:
 
 def main(model_name: str, device: torch.device) -> None:
     config = {
-        "model_name": model_name, "task_name": "XNLI-DGX5",
-        "method": "act_prob_90p", "lang": "en", "finetune_lang": "null", # ["en", "vi", "en+vi", "null"]
+        "model_name": model_name, "task_name": "XNLI-FT",
+        "method": "lape/set6", "lang": "en", "finetune_lang": "en+ur", # ["en", "vi", "en+vi", "null"]
         "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
