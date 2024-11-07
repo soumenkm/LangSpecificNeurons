@@ -121,24 +121,38 @@ class LoRAFineTuner:
                 self.log({"accuracy": acc, "param_norm": total_norm})
         # Custom: End.
     
-    def _get_frozen_neurons(self) -> torch.tensor:
-        lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
+    def _get_lang_neuron(self, method) -> dict:
+        lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{method}/lang_neuron_data.pkl")
         if lang_neuron_path.exists():
             lang_neuron = pickle.load(open(lang_neuron_path, "rb"))
             print(f"The lang neurons data is loaded from {lang_neuron_path}")
         else:
             raise ValueError(f"{lang_neuron_path} doesn't exist!")
-        
+        return lang_neuron
+    
+    def _get_frozen_neurons(self) -> torch.tensor:
+        lang_neuron = self._get_lang_neuron(method=self.method)
         all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])) # (4Ld, 2)
         if self.finetune_lang == "null":
             return None
         elif "+" in self.finetune_lang:
             lang1, lang2 = self.finetune_lang.split("+")
-            ft_index1 = lang_neuron["lang_to_neuron"][lang1] # (N, 2)
+            if "set" in lang1:
+                lang_set, lang = lang1.split("_")
+                lang_neuron1 = self._get_lang_neuron(method=f"lape/{lang_set}")
+                ft_index1 = lang_neuron1["lang_to_neuron"][lang] # (N, 2)
+            else:
+                ft_index1 = lang_neuron["lang_to_neuron"][lang1] # (N, 2)
             ft_index2 = lang_neuron["lang_to_neuron"][lang2] # (N, 2)
             ft_index = torch.cat([ft_index1, ft_index2], dim=0)
-        elif len(self.finetune_lang) == 2:
-            ft_index = lang_neuron["lang_to_neuron"][self.finetune_lang] # (N, 2)
+        
+        elif len(self.finetune_lang) in [2, 7]:
+            if "set" in self.finetune_lang:
+                lang_set, lang = self.finetune_lang.split("_")
+                lang_neuron1 = self._get_lang_neuron(method=f"lape/{lang_set}")
+                ft_index = lang_neuron1["lang_to_neuron"][lang] # (N, 2)
+            else:
+                ft_index = lang_neuron["lang_to_neuron"][self.finetune_lang] # (N, 2)
         else:
             raise ValueError("Invalid finetune lang!")
         
@@ -183,7 +197,7 @@ class LoRAFineTuner:
 def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XNLI-FT",
-        "method": "lape/set6", "lang": "en", "finetune_lang": "en+ur", # ["en", "vi", "en+vi", "null"]
+        "method": "lape/set6", "lang": "en", "finetune_lang": "set1_en", # ["en", "vi", "en+vi", "null", "set1_en"]
         "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
