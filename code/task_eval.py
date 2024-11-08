@@ -23,7 +23,7 @@ class Evaluator:
         self.task_name = self.config_data["config"]["task_name"]
         self.train_lang = self.config_data["config"]["lang"]
         self.finetune_lang = self.config_data["config"]["finetune_lang"]
-        self.method = self.config_data["config"]["method"]
+        self.method = self.config["method"] #self.config_data["config"]["method"]
         self.eval_lang = self.config["eval_lang"]
         self.int_by = self.config["intervene_by"]
         self.eval_lang = self.config["eval_lang"]
@@ -122,6 +122,7 @@ def main(config: dict, device: torch.device) -> None:
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluation script for language model")
+    parser.add_argument("--method", type=str, required=True, help="Method")
     parser.add_argument("--ckpt_path", type=str, required=True, help="Checkpoint path")
     parser.add_argument("--ckpt_id", type=str, required=True, help="Checkpoint id")
     parser.add_argument("--eval_lang", type=str, required=True, help="Language for evaluation")
@@ -131,6 +132,7 @@ if __name__ == "__main__":
     
     config = {
         "config_path": Path(Path.cwd(), f"{args.ckpt_path}/master_config.pkl"),
+        "method": args.method,
         "ckpt_name": f"checkpoint-{args.ckpt_id}/pytorch_model.bin",
         "eval_lang": args.eval_lang,
         "batch_size": 8,
