@@ -26,8 +26,6 @@ class Evaluator:
         self.method = self.config["method"] #self.config_data["config"]["method"]
         self.eval_lang = self.config["eval_lang"]
         self.int_by = self.config["intervene_by"]
-        self.eval_lang = self.config["eval_lang"]
-        self.int_by = self.config["intervene_by"]
         
         self.eval_path = Path(Path.cwd(), f"outputs/task_eval/{self.model_name_srt}_finetune_{self.task_name}/{self.method}/{self.int_by}/{self.config['ckpt_name'].split('/')[0]}_train_{self.train_lang}_finetune_{self.finetune_lang}_eval_{self.eval_lang}_result.txt")
         if not self.eval_path.parent.exists():
