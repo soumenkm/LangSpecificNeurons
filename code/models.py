@@ -236,6 +236,10 @@ class ModelForCLS(torch.nn.Module):
         self.head = torch.nn.Sequential(
             torch.nn.Linear(self.d, self.c)       
         ).to(self.device)
+        for param in self.base.parameters():
+            param.requires_grad = False
+        for param in self.head.parameters():
+            param.requires_grad = True
     
     def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, labels: Union[None, torch.tensor]) -> torch.tensor:
         z = self.base(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state # (b, T, d)
@@ -247,6 +251,18 @@ class ModelForCLS(torch.nn.Module):
         else:
             loss = None
         return {"logits": out, "loss": loss}
+    
+    def calc_num_params(self) -> None:
+        # Check if the requires_grad are set correctly
+        train_params = 0
+        total_params = 0
+        for name, param in self.named_parameters():
+            total_params += param.numel()
+            if param.requires_grad:
+                train_params += param.numel()
+        print(f"Number of total parameters: {total_params}")
+        print(f"Number of trainable parameters: {train_params}")
+        print(f"Model efficiency: {train_params * 100 / total_params:.3f}%")
 
 class SparseModelForCLS(torch.nn.Module):
     def __init__(self, device: torch.device, model_name: str, num_class: int, quant_config: Union[BitsAndBytesConfig, None], alpha: float):
@@ -328,7 +344,12 @@ class SparseModelForCLS(torch.nn.Module):
         return {"logits": out, "loss": total_loss}
 
 class ModelForCLSWithLoRA(torch.nn.Module):
-    def __init__(self, device: torch.device, tokenizer: AutoTokenizer, model_name: str, sparse_alpha: Union[float, None], num_class: int, lora_rank: int, lora_alpha: float, quant_config: Union[None, BitsAndBytesConfig], frozen_neurons: Union[None, torch.tensor]):
+    def __init__(self, device: torch.device, tokenizer: AutoTokenizer, model_name: str, sparse_alpha: Union[float, None], num_class: int, lora_rank: int, lora_alpha: float, quant_config: Union[None, BitsAndBytesConfig], frozen_neurons: Union[str, torch.tensor], apply_lora_mlp: bool):
+        """frozen_neurons = "all" => All neurons in the MLP block is frozen
+        frozen_neurons = "none" => No neurons in the MLP block is frozen (all neurons are trainable)
+        apply_lora_mlp = False => We do not use A and B in MLP block so we do not apply Lora in MLP block (so MLP neurons are frozen)
+        frozen_neurons has no effect if apply_lora_mlp is False"""
+        
         super(ModelForCLSWithLoRA, self).__init__()
         self.model_name = model_name
         self.device = device
@@ -351,12 +372,35 @@ class ModelForCLSWithLoRA(torch.nn.Module):
         
         self.rank = lora_rank
         self.alpha = lora_alpha
-        self.apply_lora(rank=self.rank, alpha=self.alpha, frozen_neurons=frozen_neurons)
+        self.L = len(self.get_layers())
+        name, layer = self.get_target_linear_module(layer_idx=0)
+        self.int_d = getattr(layer, name).out_features
+        self.apply_lora_mlp = apply_lora_mlp
+        self.frozen_neurons = self._get_frozen_neurons(frozen_neurons=frozen_neurons)
+        self.apply_lora(rank=self.rank, alpha=self.alpha, frozen_neurons=self.frozen_neurons)
     
-    def apply_lora(self, rank: int, alpha: float, frozen_neurons: Union[None, torch.tensor]) -> None:
+    def _get_frozen_neurons(self, frozen_neurons: torch.tensor):
+        if frozen_neurons == "all":
+            frozen_neurons_mod = torch.cartesian_prod(torch.arange(self.L), torch.arange(self.int_d)) # (4Ld, 2)
+        elif frozen_neurons == "none":
+            frozen_neurons_mod = []
+            for i in range(self.L):
+                    frozen_neurons_mod.append((i, -1))
+            frozen_neurons_mod = torch.tensor(frozen_neurons_mod).to(self.device)
+        else:
+            layer_idx = set([i.item() for i, j in frozen_neurons])
+            frozen_neurons_mod = []
+            for i in range(self.L):
+                if i not in layer_idx:
+                    frozen_neurons_mod.append((i, -1))
+            frozen_neurons_mod = torch.tensor(frozen_neurons.tolist() + frozen_neurons_mod).to(self.device)
+        return frozen_neurons_mod
+    
+    def apply_lora(self, rank: int, alpha: float, frozen_neurons: torch.tensor) -> None:
         """frozen_neuron_ids = [(i, j) | j: neuron index for a layer i]
         """
-        if frozen_neurons is not None:
+        ModelForCLSWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha)
+        if self.apply_lora_mlp:
             frozen_neurons_dict = {}
             for (layer_idx, neuron_idx) in frozen_neurons:
                 layer_idx = layer_idx.item()
@@ -371,9 +415,7 @@ class ModelForCLSWithLoRA(torch.nn.Module):
                     up_proj_linear = getattr(target_module, target_linear_name)
                     mask_A, mask_B = ModelForCLSWithLoRA.create_lora_mask(device=self.device, d_in=up_proj_linear.in_features, d_out=up_proj_linear.out_features, rank=rank, frozen_neuron_ids=frozen_neuron_ids)
                     up_proj_lora = LinearWithLoRA(up_proj_linear, rank, alpha, mask_A, mask_B)
-                    setattr(target_module, target_linear_name, up_proj_lora)
-                    
-        ModelForCLSWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha)            
+                    setattr(target_module, target_linear_name, up_proj_lora)            
 
     @staticmethod
     def replace_linear_with_lora(device: torch.device, model: torch.nn.Module, rank: int, alpha: float):
@@ -392,7 +434,7 @@ class ModelForCLSWithLoRA(torch.nn.Module):
         """
         mask_A = torch.ones(d_in, rank).to(device)
         mask_B = torch.ones(rank, d_out).to(device)
-        if frozen_neuron_ids is not None:
+        if frozen_neuron_ids is not None and frozen_neuron_ids != [-1]:
             for neuron_id in frozen_neuron_ids:
                 mask_B[:, neuron_id] = 0  # Zero out the entire column for the frozen neurons
         return mask_A, mask_B
@@ -503,6 +545,35 @@ def main_lora(model_name: str, device: torch.device) -> None:
     print(out1["logits"].sum(), out1["loss"]) 
     print(out2["logits"].sum(), out2["loss"])
 
+def test_lora(model_name: str, device: torch.device) -> None:
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type='nf4',  
+            bnb_4bit_compute_dtype=torch.bfloat16,  
+            bnb_4bit_use_double_quant=True,  
+    )
+    fn = "all" # torch.tensor([[0,1], [0,2], [1,1], [1,2]])
+    torch.manual_seed(42)
+    model1 = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=None, num_class=3, lora_rank=8, lora_alpha=16, quant_config=quant_config, frozen_neurons=fn, apply_lora_mlp=True).to(device)
+    torch.manual_seed(42)
+    model2 = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=None, num_class=3, lora_rank=8, lora_alpha=16, quant_config=quant_config, frozen_neurons=fn, apply_lora_mlp=False).to(device)
+    input_ids = torch.randint(low=0, high=100, size=(16, 256)).to(device) # (b, T)
+    labels = torch.randint(low=0, high=3, size=(16,)).to(device) # (b,)
+    attention_mask = torch.ones(size=(16, 256)).to(device) # (b, T)
+    print(model1)
+    model1.calc_num_lora_params()
+    print(model2)
+    model2.calc_num_lora_params()
+    model1.train()
+    model2.train()
+    with torch.autocast("cuda"):
+        out1 = model1(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels) # (b, c)
+        out2 = model2(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels) # (b, c)
+    print(out1["logits"].sum(), out1["loss"]) 
+    print(out2["logits"].sum(), out2["loss"]) 
+    print("DONE")
+
 def main_mlm(model_name: str, device: torch.device) -> None:
     ds = WikipediaDatasetHF(model_name=model_name, lang="en", max_context_len=512)
     dl = DataLoader(dataset=ds, batch_size=4)
@@ -531,5 +602,6 @@ if __name__ == "__main__":
     print(f"Using {device}...")
     
     # main_mlm(models_map["llama3"], device=device)
-    main_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
+    # main_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
+    test_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
     
