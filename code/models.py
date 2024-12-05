@@ -1,6 +1,6 @@
 import os, torch, json, sys
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 torch.manual_seed(42)
 from pathlib import Path
@@ -247,15 +247,97 @@ class ModelForCLS(torch.nn.Module):
         else:
             loss = None
         return {"logits": out, "loss": loss}
- 
+
+class SparseModelForCLS(torch.nn.Module):
+    def __init__(self, device: torch.device, model_name: str, num_class: int, quant_config: Union[BitsAndBytesConfig, None], alpha: float):
+        super(SparseModelForCLS, self).__init__()
+        self.device = device
+        self.model_name = model_name
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.base = AutoModel.from_pretrained(self.model_name, quantization_config=quant_config, device_map="auto")
+        self.d = self.base.config.hidden_size
+        self.c = num_class
+        self.alpha = alpha  # Weight for sparsity loss
+        self.loss_fn = torch.nn.CrossEntropyLoss()
+        
+        # Multi-layer classification head
+        self.head = torch.nn.Sequential(
+            torch.nn.Linear(self.d, self.c)
+        ).to(self.device)
+    
+    def get_layers(self) -> torch.nn.ModuleList:
+        m = self.model_name.lower()
+        if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
+            layers = self.base.layers
+        elif "bloom" in m:
+            layers = self.base.transformer.h
+        else:
+            raise NotImplementedError("Invalid model name!")
+        return layers
+    
+    def get_target_act_module(self, layer_idx: int) -> torch.nn.Module:
+        m = self.model_name.lower()
+        mlp = self.get_layers()[layer_idx].mlp
+        if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
+            target_module = mlp.act_fn
+        elif "bloom" in m:
+            target_module = mlp.gelu_impl
+        else:
+            raise NotImplementedError("Invalid model name!")
+        return target_module
+    
+    def create_hook_function(self, layer_idx: int):
+        def hook_function(module: torch.nn.Module, inputs: torch.Tensor, outputs: torch.Tensor):
+            if self.training:
+                outputs.retain_grad()
+            self.activations[layer_idx] = outputs # (b, T, 4d)
+        return hook_function
+
+    def register_hook(self):
+        self.hooks_list = [] # List[L]
+        for layer_idx in range(len(self.get_layers())):
+            target_module = self.get_target_act_module(layer_idx=layer_idx)
+            hook_function = self.create_hook_function(layer_idx=layer_idx)
+            h = target_module.register_forward_hook(hook_function)
+            self.hooks_list.append(h)
+    
+    def remove_hook(self):
+        for h in self.hooks_list:
+            h.remove()
+    
+    def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, labels: Union[None, torch.tensor]) -> torch.tensor:
+        self.activations = {} # Dict[(b, T, 4d)]
+        self.register_hook()
+        outputs = self.base(input_ids=input_ids, attention_mask=attention_mask)
+        last_hidden_state = outputs.last_hidden_state  # Final layer output (b, T, d)
+        y = last_hidden_state[:, -1, :].to(self.device)  # Use the last token embedding (b, d)
+        out = self.head(y)  # (b, c)
+        
+        # Compute loss if labels are provided
+        if labels is not None:
+            labels = labels.to(self.device)
+            cls_loss = self.loss_fn(out, labels)  # Cross-entropy loss
+            sparsity_loss = 0
+            for activation in self.activations.values():
+                sparsity_loss += self.alpha * torch.norm(activation, p=1)  # ||activation|| (L1 norm)
+            total_loss = cls_loss + sparsity_loss
+        else:
+            total_loss = 0
+        
+        self.remove_hook()
+        return {"logits": out, "loss": total_loss}
+
 class ModelForCLSWithLoRA(torch.nn.Module):
-    def __init__(self, device: torch.device, tokenizer: AutoTokenizer, model_name: str, num_class: int, lora_rank: int, lora_alpha: float, quant_config: Union[None, BitsAndBytesConfig], frozen_neurons: Union[None, torch.tensor]):
+    def __init__(self, device: torch.device, tokenizer: AutoTokenizer, model_name: str, sparse_alpha: Union[float, None], num_class: int, lora_rank: int, lora_alpha: float, quant_config: Union[None, BitsAndBytesConfig], frozen_neurons: Union[None, torch.tensor]):
         super(ModelForCLSWithLoRA, self).__init__()
         self.model_name = model_name
         self.device = device
         self.tokenizer = tokenizer
         self.num_class = num_class
-        self.model = ModelForCLS(device=self.device, model_name=self.model_name, num_class=self.num_class, quant_config=quant_config)
+        if sparse_alpha is None:
+            self.model = ModelForCLS(device=self.device, model_name=self.model_name, num_class=self.num_class, quant_config=quant_config)
+        else:
+            self.model = SparseModelForCLS(device=self.device, model_name=self.model_name, num_class=self.num_class, quant_config=quant_config, alpha=sparse_alpha)
         
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -404,7 +486,7 @@ def main_lora(model_name: str, device: torch.device) -> None:
             bnb_4bit_use_double_quant=True,  
     )
     fn = torch.tensor([[0,1], [0,2], [1,1], [1,2]])
-    model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, num_class=3, lora_rank=8, lora_alpha=16, quant_config=quant_config, frozen_neurons=fn).to(device)
+    model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=1e-8, num_class=3, lora_rank=8, lora_alpha=16, quant_config=quant_config, frozen_neurons=fn).to(device)
     input_ids = torch.randint(low=0, high=100, size=(16, 256)).to(device) # (b, T)
     labels = torch.randint(low=0, high=3, size=(16,)).to(device) # (b,)
     attention_mask = torch.ones(size=(16, 256)).to(device) # (b, T)
@@ -414,8 +496,8 @@ def main_lora(model_name: str, device: torch.device) -> None:
         "indices": torch.tensor([[0,1], [1,2], [2,3], [2,4], [2,5]]),
         "value": torch.tensor([0, 0, 0, 0, 0])
     }
-    model.eval()
-    with torch.no_grad(), torch.autocast("cuda"):
+    model.train()
+    with torch.autocast("cuda"):
         out1 = model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels) # (b, c)
         out2 = model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=intervene_config, labels=labels) # (b, c)
     print(out1["logits"].sum(), out1["loss"]) 
@@ -448,6 +530,6 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
-    main_mlm(models_map["llama3"], device=device)
-    # main_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
+    # main_mlm(models_map["llama3"], device=device)
+    main_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
     
