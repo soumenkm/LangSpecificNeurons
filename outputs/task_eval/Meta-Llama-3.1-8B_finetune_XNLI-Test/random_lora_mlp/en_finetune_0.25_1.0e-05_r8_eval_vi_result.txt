@@ -1,0 +1,1 @@
+[RESULT] Train lang: en, Eval lang: vi, Zero shot acc: 0.8005191683769226

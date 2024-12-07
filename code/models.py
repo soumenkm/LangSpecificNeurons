@@ -387,6 +387,8 @@ class ModelForCLSWithLoRA(torch.nn.Module):
             for i in range(self.L):
                     frozen_neurons_mod.append((i, -1))
             frozen_neurons_mod = torch.tensor(frozen_neurons_mod).to(self.device)
+        elif frozen_neurons is None:
+            frozen_neurons_mod = None
         else:
             layer_idx = set([i.item() for i, j in frozen_neurons])
             frozen_neurons_mod = []
@@ -439,7 +441,7 @@ class ModelForCLSWithLoRA(torch.nn.Module):
                 mask_B[:, neuron_id] = 0  # Zero out the entire column for the frozen neurons
         return mask_A, mask_B
      
-    def calc_num_lora_params(self) -> None:
+    def calc_num_params(self) -> None:
         # Check if the requires_grad are set correctly
         train_params = 0
         total_params = 0
