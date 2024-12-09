@@ -489,6 +489,8 @@ class ModelForCLSWithLoRA(torch.nn.Module):
     
     def create_hook_function(self, intervene_config: dict):
         def hook_function(module: torch.nn.Module, inputs: torch.Tensor, outputs: torch.Tensor):
+            if self.training:
+                outputs.retain_grad()
             indices = intervene_config["indices"] # List[n x Tuple[layer_index, neuron_index]] (n neurons to intervene)
             value = intervene_config["value"] # List[n] 
             for i, (layer_idx, neuron_idx) in enumerate(indices):
