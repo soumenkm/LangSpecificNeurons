@@ -1,7 +1,7 @@
 import os, json, pickle, torch, wandb, tqdm
 if __name__ == "__main__":
     wandb.login()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     
 torch.manual_seed(42)
 from pathlib import Path
@@ -49,6 +49,10 @@ class LoRAFineTuner:
         self.L = 32
         self.int_d = 14336
         self.frozen_neurons, self.apply_lora_mlp = self._get_frozen_neurons()
+        self.intervene_config = self._get_intervene_config(intervene_lang=self.config["intervene_lang"],
+                                                           lang_neuron_method=self.config["lang_neuron_method"],
+                                                           int_by=self.config["int_by"],
+                                                           is_activate=True)
         if self.method == "only_cls":
             self.model = ModelForCLS(device=self.device, model_name=self.model_name, num_class=self.config["num_class"], quant_config=self.quant_config)
         else:
@@ -92,16 +96,16 @@ class LoRAFineTuner:
             wandb.define_metric("val/*", step_metric="val/step")
     
     def _get_frozen_neurons(self) -> torch.tensor:
-        if self.method == "apply_lora_mlp":
+        if "apply_lora_mlp" in self.method:
             frozen_neurons = "all"
             apply_lora_mlp = True
-        elif self.method == "no_lora_mlp":
+        elif "no_lora_mlp" in self.method:
             frozen_neurons = None
             apply_lora_mlp = False
-        elif self.method == "only_cls":
+        elif "only_cls" in self.method:
             frozen_neurons = None
             apply_lora_mlp = None
-        elif self.method == "random_lora_mlp":
+        elif "random_lora_mlp" in self.method:
             frozen_neurons = [(i,j) for i in range(self.L) for j in torch.randint(low=0, high=self.int_d, size=(10,))]
             frozen_neurons = torch.tensor(frozen_neurons)
             apply_lora_mlp = True
@@ -111,6 +115,8 @@ class LoRAFineTuner:
         """intervene_lang = yy,
         lang_neuron_method = lape/set1, act_prob_95p,
         int_by = mean_p95_act, mean_p90_act, mean_p75_act, mean_mu_act"""
+        if intervene_lang == "null":
+            return None
         lang = intervene_lang
         lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{lang_neuron_method}/lang_neuron_data.pkl")
         if lang_neuron_path.exists():
@@ -160,13 +166,13 @@ class LoRAFineTuner:
         if is_train:
             self.model.train()
             with torch.amp.autocast(device_type="cuda"):
-                out = self.model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels)
+                out = self.model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=self.intervene_config, labels=labels)
             out["logits"].requires_grad_(True)
             assert out["logits"].requires_grad == True
         else:
             self.model.eval()
             with torch.no_grad(), torch.amp.autocast(device_type="cuda"):
-                out = self.model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels)       
+                out = self.model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=self.intervene_config, labels=labels)       
         return out # (b, c)
         
     def _calc_acc_batch(self, pred_outputs: torch.tensor, true_outputs: torch.tensor) -> torch.tensor:
@@ -252,7 +258,7 @@ class LoRAFineTuner:
         model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=None, num_class=config["num_class"], lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"], quant_config=config_data["quant_config"], frozen_neurons=config_data["frozen_neurons"], apply_lora_mlp=config_data["apply_lora_mlp"])
         checkpoint_path = Path(config_path.parent, checkpoint_name)
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint, strict=False)
+        model.load_state_dict(checkpoint["model_state"], strict=False)
         
         print(f"Model loaded from checkpoint: {checkpoint_path}")
         return {"model": model, "config_data": config_data}
@@ -260,7 +266,8 @@ class LoRAFineTuner:
 def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XNLI-MeanIntFT",
-        "method": "no_lora_mlp", "lang": "en", # ["apply_lora_mlp", "random_lora_mlp", "no_lora_mlp", "only_cls"]
+        "method": "no_lora_mlp/mean_int_set1_vi", "lang": "en", # ["apply_lora_mlp", "random_lora_mlp", "no_lora_mlp", "only_cls"]
+        "intervene_lang": "vi", "lang_neuron_method": "lape/set1", "int_by": "mean_mu_act", # intervene lang could be "null" also
         "num_epochs": 1, "num_steps": None, "batch_size": 32, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 100.0, "weight_decay": 0.1,

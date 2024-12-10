@@ -56,11 +56,7 @@ class Evaluator:
         eval_acc = sum(acc_list)/len(acc_list)
         return float(eval_acc)
     
-    def evaluate(self) -> None:
-        if self.eval_path.exists():
-            print(f"The result already exists: {self.eval_path}")
-            return None
-        
+    def evaluate(self) -> None:        
         lang = self.eval_lang
         self.eval_ds = XNLIDatasetHF(model_name=self.model_name, lang=lang, max_context_len=self.config_data["config"]["max_context_length"], frac=self.config["eval_frac"], is_train=False)
         self.eval_dl = DataLoader(self.eval_ds, batch_size=self.config["batch_size"], shuffle=False, drop_last=True)
@@ -76,10 +72,10 @@ def main(config: dict, device: torch.device) -> None:
     
 if __name__ == "__main__":
     config = {
-        "config_path": Path(Path.cwd(), f"outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-MeanIntFT/no_lora_mlp/en_finetune_0.25_1.0e-05_r8/master_config.pkl"),
+        "config_path": Path(Path.cwd(), f"outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-MeanIntFT/no_lora_mlp/mean_int_set1_vi/en_finetune_0.25_1.0e-05_r8/master_config.pkl"),
         "ckpt_name": f"ckpt_ep_0.pth",
         "eval_lang": "vi",
-        "batch_size": 8,
+        "batch_size": 32,
         "eval_frac": 1.0,
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
