@@ -1,0 +1,1 @@
+[RESULT] Train lang: en, Eval lang: vi, Int acc: 0.7949281334877014

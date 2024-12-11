@@ -51,8 +51,7 @@ class LoRAFineTuner:
         self.frozen_neurons, self.apply_lora_mlp = self._get_frozen_neurons()
         self.intervene_config = self._get_intervene_config(intervene_lang=self.config["intervene_lang"],
                                                            lang_neuron_method=self.config["lang_neuron_method"],
-                                                           int_by=self.config["int_by"],
-                                                           is_activate=True)
+                                                           int_by=self.config["int_by"])
         if self.method == "only_cls":
             self.model = ModelForCLS(device=self.device, model_name=self.model_name, num_class=self.config["num_class"], quant_config=self.quant_config)
         else:
@@ -111,7 +110,7 @@ class LoRAFineTuner:
             apply_lora_mlp = True
         return frozen_neurons, apply_lora_mlp
     
-    def _get_intervene_config(self, intervene_lang: str, lang_neuron_method: str, int_by: str, is_activate: bool) -> dict:
+    def _get_intervene_config(self, intervene_lang: str, lang_neuron_method: str, int_by: str) -> dict:
         """intervene_lang = yy,
         lang_neuron_method = lape/set1, act_prob_95p,
         int_by = mean_p95_act, mean_p90_act, mean_p75_act, mean_mu_act"""
@@ -132,13 +131,19 @@ class LoRAFineTuner:
         else:
             raise ValueError(f"{act_data_path} doesn't exist!")
         
-        mean_act = act_data[int_by].to(self.device) # (L, 4d)
         index = lang_neuron["lang_to_neuron"][lang].to(self.device) # (N, 2)
-        value = mean_act[index[:, 0], index[:, 1]] # (N,)
-        intervene_config = {
-            "indices": index,
-            "value": value if is_activate else torch.zeros_like(value)
-        }
+        if int_by != "zero":
+            mean_act = act_data[int_by].to(self.device) # (L, 4d)
+            value = mean_act[index[:, 0], index[:, 1]] # (N,)
+            intervene_config = {
+                "indices": index,
+                "value": value
+            }
+        else:
+            intervene_config = {
+                "indices": index,
+                "value": torch.zeros(size=(index.shape[0],)).to(index.device)
+            }
         return intervene_config
     
     def _find_norm(self) -> float:
@@ -266,9 +271,9 @@ class LoRAFineTuner:
 def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XNLI-MeanIntFT",
-        "method": "no_lora_mlp/mean_int_set1_vi", "lang": "en", # ["apply_lora_mlp", "random_lora_mlp", "no_lora_mlp", "only_cls"]
-        "intervene_lang": "vi", "lang_neuron_method": "lape/set1", "int_by": "mean_mu_act", # intervene lang could be "null" also
-        "num_epochs": 1, "num_steps": None, "batch_size": 32, "max_context_length": 256, # steps are auto calculated
+        "method": "no_lora_mlp/mean_int_null", "lang": "en", # ["apply_lora_mlp", "random_lora_mlp", "no_lora_mlp", "only_cls"]
+        "intervene_lang": "null", "lang_neuron_method": "lape/set1", "int_by": "zero", # intervene lang could be "null" also
+        "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 100.0, "weight_decay": 0.1,
         "adam_betas": (0.95, 0.999), "grad_acc_steps": 1, "num_ckpt_per_epoch": 4, "is_4bit_quant": True, "fp16": False, "bf16": True,
