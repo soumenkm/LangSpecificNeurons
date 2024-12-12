@@ -1,7 +1,7 @@
 import os, json, pickle, torch, wandb
 if __name__ == "__main__":
     wandb.login()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
     
 torch.manual_seed(42)
 from pathlib import Path
@@ -36,7 +36,7 @@ class LoRAFineTuner:
         self.tokenizer = self.train_ds.tokenizer
 
         self.batch_size = self.config["batch_size"]
-        self.config["num_steps"] = len(self.train_ds)//self.batch_size
+        self.config["num_steps"] = len(self.train_ds)//(self.batch_size * self.config["grad_acc_steps"])
         self.num_steps = self.config["num_steps"]
         self.num_epochs = self.config["num_epochs"]
         self.project_name = f"{self.model_name.split('/')[-1]}_finetune_{self.config['task_name']}"
@@ -44,8 +44,8 @@ class LoRAFineTuner:
         self.run_name = f"{self.method}/{self.lang}_finetune_{self.finetune_lang}_{self.config['train_frac']:.2f}_{self.config['initial_lr']:.1e}_r{self.config['lora_rank']}"
         self.output_dir = f"outputs/ckpt/{self.project_name}/{self.run_name}"
 
-        self.frozen_neurons = self._get_frozen_neurons()
-        self.model = ModelForCLSWithLoRA(device=self.device, tokenizer=self.tokenizer, model_name=self.model_name, num_class=self.config["num_class"], lora_rank=self.config["lora_rank"], lora_alpha=self.config["lora_alpha"], quant_config=self.quant_config, frozen_neurons=self.frozen_neurons)
+        self.frozen_neurons, self.apply_lora_mlp = self._get_frozen_neurons()
+        self.model = ModelForCLSWithLoRA(device=self.device, tokenizer=self.tokenizer, model_name=self.model_name, sparse_alpha=None, num_class=self.config["num_class"], lora_rank=self.config["lora_rank"], lora_alpha=self.config["lora_alpha"], quant_config=self.quant_config, frozen_neurons=self.frozen_neurons, apply_lora_mlp=self.apply_lora_mlp)
         self.optimizer = torch.optim.AdamW(params=self.model.parameters(), lr=self.config['initial_lr'], weight_decay=self.config["weight_decay"], betas=self.config["adam_betas"])
         self.scheduler = get_linear_schedule_with_warmup(optimizer=self.optimizer,
                                                          num_warmup_steps=int(0.01 * self.num_steps), 
@@ -122,7 +122,7 @@ class LoRAFineTuner:
         # Custom: End.
     
     def _get_lang_neuron(self, method) -> dict:
-        lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{method}/lang_neuron_data.pkl")
+        lang_neuron_path = Path(Path.cwd(), f"outputs/xnli_neurons/{self.model_name_srt}/{method}/lang_neuron_data.pkl")
         if lang_neuron_path.exists():
             lang_neuron = pickle.load(open(lang_neuron_path, "rb"))
             print(f"The lang neurons data is loaded from {lang_neuron_path}")
@@ -130,11 +130,11 @@ class LoRAFineTuner:
             raise ValueError(f"{lang_neuron_path} doesn't exist!")
         return lang_neuron
     
-    def _get_frozen_neurons(self) -> torch.tensor:
+    def _get_frozen_neurons(self) -> Tuple[torch.tensor, bool]:
         lang_neuron = self._get_lang_neuron(method=self.method)
         all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])) # (4Ld, 2)
         if self.finetune_lang == "null":
-            return None
+            return "all", False
         elif "+" in self.finetune_lang:
             lang1, lang2 = self.finetune_lang.split("+")
             if "set" in lang1:
@@ -159,7 +159,7 @@ class LoRAFineTuner:
         all_neurons = all_neurons.to(self.device)
         ft_index = ft_index.to(self.device)
         frozen_index = all_neurons[~((all_neurons[:, None] == ft_index).all(-1).any(1))]
-        return frozen_index
+        return frozen_index, True
     
     def _save_config(self) -> None: 
         config_data = {
@@ -180,7 +180,7 @@ class LoRAFineTuner:
         config = config_data["config"]
         model_name = config["model_name"]
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, num_class=config["num_class"], lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"], quant_config=config_data["quant_config"], frozen_neurons=None)
+        model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, num_class=config["num_class"], lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"], quant_config=config_data["quant_config"], frozen_neurons=config_data["frozen_neurons"], apply_lora_mlp=config_data["apply_lora_mlp"])
         checkpoint_path = Path(config_path.parent, checkpoint_name)
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint, strict=False)
@@ -191,17 +191,17 @@ class LoRAFineTuner:
     def train(self) -> None:
         self._save_config()
         print(self.model)
-        print(self.model.calc_num_lora_params())
+        print(self.model.calc_num_params())
         self.trainer.train(resume_from_checkpoint=False)
 
 def main(model_name: str, device: torch.device) -> None:
     config = {
-        "model_name": model_name, "task_name": "XNLI-FT",
-        "method": "lape/set6", "lang": "en", "finetune_lang": "set1_en", # ["en", "vi", "en+vi", "null", "set1_en"]
-        "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
+        "model_name": model_name, "task_name": "XNLI-TN",
+        "method": "act_prob_90p", "lang": "en", "finetune_lang": "en", # ["en", "vi", "en+vi", "null", "set1_en"]
+        "num_epochs": 1, "num_steps": None, "batch_size": 1, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
-        "adam_betas": (0.95, 0.999), "grad_acc_steps": 1, "num_ckpt_per_epoch": 4, "is_4bit_quant": True, "fp16": False, "bf16": True,
+        "adam_betas": (0.95, 0.999), "grad_acc_steps": 8, "num_ckpt_per_epoch": 2, "is_4bit_quant": True, "fp16": False, "bf16": True,
         "wandb_log": True
     }
     trainer = LoRAFineTuner(device=device, config=config)

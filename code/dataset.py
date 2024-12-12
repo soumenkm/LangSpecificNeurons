@@ -36,7 +36,7 @@ class XNLIDatasetHF(Dataset):
         with tqdm.tqdm(iterable=range(len(dsl)), desc="Preparing dataset...", unit="example", colour="green") as pbar:
             for index in pbar:
                 inputs = [dsl[index]["premise"] + f" {self.tokenizer.eos_token} " + dsl[index]["hypothesis"]]
-                outputs = self.tokenizer(inputs, padding="max_length", truncation=True, max_length=512, return_tensors="pt") # (1, Tmax)
+                outputs = self.tokenizer(inputs, padding="longest", truncation=True, max_length=512, return_tensors="pt") # (1, Tmax)
                 labels = torch.tensor([dsl[index]["label"]]) # (1,)
                 seq_len = outputs["attention_mask"].sum().item()
                 if seq_len < self.Tmax:
@@ -117,10 +117,12 @@ def main_wiki(model_name: str):
 def main_xnli(model_name: str):
     ds = XNLIDatasetHF(model_name=model_name, lang="fr", max_context_len=256, frac=0.01, is_train=True)
     print(len(ds))
+    dl = DataLoader(ds, batch_size=8)
+    print(next(iter(dl)))
     print("DONE")
 
 if __name__ == "__main__":
     ml = ["llama2"]
     for model_key in ml:
-        main_wiki(model_name=models_map[model_key])
+        main_xnli(model_name=models_map[model_key])
         print(f"Model: {model_key} done!")

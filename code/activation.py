@@ -1,6 +1,7 @@
 import json, os, sys, tqdm, pickle, datetime, random
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import torch
 torch.manual_seed(42)
@@ -10,17 +11,18 @@ from transformers import BitsAndBytesConfig
 from torch.utils.data import Dataset, DataLoader, Subset
 from typing import List, Tuple, Union
 import pandas as pd
-from dataset import WikipediaDatasetHF
+from dataset import XNLIDatasetHF, WikipediaDatasetHF
 from models import ModelForMLM
 from utils import lang_map, models_map
 
 class NeuronRelevance:
-    def __init__(self, device: torch.device, model_name: str, quant_config: Union[None, BitsAndBytesConfig], lang: str, scoring_method: str):
+    def __init__(self, device: torch.device, model_name: str, quant_config: Union[None, BitsAndBytesConfig], lang: str, scoring_method: str, frac: float):
         """scoring_method: Any["all_act", "act_stat"]
         """
         self.cwd = Path.cwd()
         self.device = device
         self.lang = lang
+        self.frac = frac
         self.model_name = model_name
         self.model_name_srt = self.model_name.split('/')[-1]
         self.method = scoring_method
@@ -34,19 +36,18 @@ class NeuronRelevance:
         if not self.rel_data_path.exists():
             self.quant_config = quant_config
             self.model = ModelForMLM(device=self.device, model_name=self.model_name, quant_config=self.quant_config)
-            self.dataset = WikipediaDatasetHF(model_name=self.model_name, lang=self.lang, max_context_len=512)
+            self.dataset = XNLIDatasetHF(model_name=self.model_name, lang=self.lang, max_context_len=512, frac=self.frac, is_train=True)
         
     def info(self) -> str:
         return f"[INFO] {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     
-    def get_act_stat_data(self, batch_size: Union[int, None], data_frac: Union[float, None]) -> dict:
+    def get_act_stat_data(self, batch_size: Union[int, None]) -> dict:
         if self.rel_data_path.exists():
             out_obj = pickle.load(open(self.rel_data_path, "rb"))
             print(f"{self.info()}: The relevance {self.method} data is loaded from {self.rel_data_path}")
             return out_obj
         
-        ds = Subset(self.dataset, indices=random.sample(range(len(self.dataset)), k=int(len(self.dataset)*data_frac)))
-        dl = DataLoader(dataset=ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=4)
+        dl = DataLoader(dataset=self.dataset, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=4)
         
         mean_mu_tensor = torch.zeros(size=(self.model.L, self.model.int_d)).to(self.device)
         mean_std_tensor = torch.zeros(size=(self.model.L, self.model.int_d)).to(self.device)
@@ -62,7 +63,7 @@ class NeuronRelevance:
             for input_dict in pbar:
                 self.model.eval()
                 with torch.no_grad():
-                    out = self.model(**input_dict)
+                    out = self.model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], labels=None)
             
                 mu_list = []
                 std_list = []
@@ -124,14 +125,13 @@ class NeuronRelevance:
         print(f"{self.info()}: The relevance {self.method} data is stored at {self.rel_data_path}")
         return data
 
-    def get_relevance_data(self, batch_size: Union[int, None], data_frac: Union[float, None]) -> dict:
+    def get_relevance_data(self, batch_size: Union[int, None]) -> dict:
         if self.rel_data_path.exists():
             out_obj = pickle.load(open(self.rel_data_path, "rb"))
             print(f"{self.info()}: The relevance data {self.method} is loaded from {self.rel_data_path}")
             return out_obj
         
-        ds = Subset(self.dataset, indices=random.sample(range(len(self.dataset)), k=int(len(self.dataset)*data_frac)))
-        dl = DataLoader(dataset=ds, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=4)
+        dl = DataLoader(dataset=self.dataset, batch_size=batch_size, drop_last=True, shuffle=True, num_workers=4)
         
         act_stat_path = Path(Path.cwd(), f"outputs/activation/{self.model_name_srt}/act_stat/rel_{self.lang}.pkl")
         if act_stat_path.exists():
@@ -146,7 +146,7 @@ class NeuronRelevance:
             for input_dict in pbar:
                 self.model.eval()
                 with torch.no_grad():
-                    out = self.model(**input_dict)
+                    out = self.model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], labels=None)
             
                 theta_dict = {k: [] for k in self.method_list}
                 rel = {}
@@ -273,10 +273,16 @@ def main(model_name: str, device: torch.device) -> None:
             bnb_4bit_compute_dtype=torch.bfloat16,  
             bnb_4bit_use_double_quant=True,  
     )
-    for lang in ["ur", "id", "zh", "ja"]:
+    for lang in ["vi"]:
         for method in ["all_act"]:
-            rel = NeuronRelevance(device=device, model_name=model_name, quant_config=quant_config, lang=lang, scoring_method=method)
-            out = rel.get_relevance_data(batch_size=4, data_frac=0.5)
+            rel = NeuronRelevance(device=device, 
+                                  model_name=model_name, 
+                                  quant_config=quant_config, 
+                                  lang=lang, 
+                                  scoring_method=method,
+                                  frac=0.5)
+            out = rel.get_relevance_data(batch_size=1)
+            # out = rel.get_act_stat_data(batch_size=1)
             print(out) 
     print("DONE")
     

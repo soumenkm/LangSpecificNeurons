@@ -77,14 +77,17 @@ class ModelForMLM(torch.nn.Module):
         """
         input_ids = input_ids.to(self.device)
         attention_mask = attention_mask.to(self.device)
-        labels = labels.to(self.device)
+        labels = labels.to(self.device) if labels else labels
         
         self.activations = {} # Dict[(b, T, 4d)]
         self.register_hook()
         out = self.model(input_ids=input_ids, attention_mask=attention_mask)["logits"] # (b, T, V)
         self.remove_hook()
         
-        loss = self.loss_fn(out.flatten(0,1), labels.flatten()) 
+        if labels is None:
+            loss = None
+        else:
+            loss = self.loss_fn(out.flatten(0,1), labels.flatten()) 
         return {"pred_labels": out.argmax(dim=-1), "loss": loss} # (b, T)
 
 class ModelForMLMWithIntervention(torch.nn.Module):
@@ -385,7 +388,7 @@ class ModelForCLSWithLoRA(torch.nn.Module):
         elif frozen_neurons == "none":
             frozen_neurons_mod = []
             for i in range(self.L):
-                    frozen_neurons_mod.append((i, -1))
+                frozen_neurons_mod.append((i, -1))
             frozen_neurons_mod = torch.tensor(frozen_neurons_mod).to(self.device)
         elif frozen_neurons is None:
             frozen_neurons_mod = None
