@@ -1,7 +1,7 @@
 import os, json, pickle, torch, wandb
 if __name__ == "__main__":
     wandb.login()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
     
 torch.manual_seed(42)
 from pathlib import Path
@@ -131,11 +131,11 @@ class LoRAFineTuner:
         return lang_neuron
     
     def _get_frozen_neurons(self) -> Tuple[torch.tensor, bool]:
-        lang_neuron = self._get_lang_neuron(method=self.method)
-        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])) # (4Ld, 2)
         if self.finetune_lang == "null":
             return "all", False
-        elif "+" in self.finetune_lang:
+        lang_neuron = self._get_lang_neuron(method=self.method)
+        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])) # (4Ld, 2)
+        if "+" in self.finetune_lang:
             lang1, lang2 = self.finetune_lang.split("+")
             if "set" in lang1:
                 lang_set, lang = lang1.split("_")
@@ -169,6 +169,8 @@ class LoRAFineTuner:
             "run_name": self.run_name,
             "train_arg_config": self.train_arg_config,
             "quant_config": self.quant_config,
+            "frozen_neurons": self.frozen_neurons,
+            "apply_lora_mlp": self.apply_lora_mlp
         }
         with open(self.output_dir + "/master_config.pkl", 'wb') as f:
             pickle.dump(config_data, f)
@@ -180,7 +182,7 @@ class LoRAFineTuner:
         config = config_data["config"]
         model_name = config["model_name"]
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, num_class=config["num_class"], lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"], quant_config=config_data["quant_config"], frozen_neurons=config_data["frozen_neurons"], apply_lora_mlp=config_data["apply_lora_mlp"])
+        model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=None, num_class=config["num_class"], lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"], quant_config=config_data["quant_config"], frozen_neurons=config_data["frozen_neurons"], apply_lora_mlp=config_data["apply_lora_mlp"])
         checkpoint_path = Path(config_path.parent, checkpoint_name)
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint, strict=False)
@@ -191,13 +193,13 @@ class LoRAFineTuner:
     def train(self) -> None:
         self._save_config()
         print(self.model)
-        print(self.model.calc_num_params())
+        self.model.calc_num_params()
         self.trainer.train(resume_from_checkpoint=False)
 
 def main(model_name: str, device: torch.device) -> None:
     config = {
-        "model_name": model_name, "task_name": "XNLI-TN",
-        "method": "act_prob_90p", "lang": "en", "finetune_lang": "en", # ["en", "vi", "en+vi", "null", "set1_en"]
+        "model_name": model_name, "task_name": "XNLI-FT",
+        "method": "act_prob_90p", "lang": "en", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
         "num_epochs": 1, "num_steps": None, "batch_size": 1, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,

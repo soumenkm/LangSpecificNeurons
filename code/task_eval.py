@@ -20,7 +20,7 @@ class Evaluator:
         
         self.model_name = self.config_data["config"]["model_name"]
         self.model_name_srt = self.model_name.split("/")[-1]
-        self.task_name = self.config_data["config"]["task_name"]
+        self.task_name = self.config["task_name"]
         self.train_lang = self.config_data["config"]["lang"]
         self.finetune_lang = self.config_data["config"]["finetune_lang"]
         self.method = self.config["method"] #self.config_data["config"]["method"]
@@ -34,7 +34,7 @@ class Evaluator:
     def _get_intervene_config(self, intervene_lang: str, is_activate: bool) -> dict:
         """intervene_lang = yy"""
         lang = intervene_lang
-        lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
+        lang_neuron_path = Path(Path.cwd(), f"outputs/xnli_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
         if lang_neuron_path.exists():
             lang_neuron = pickle.load(open(lang_neuron_path, "rb"))
             print(f"The lang neurons data is loaded from {lang_neuron_path}")
@@ -133,7 +133,8 @@ if __name__ == "__main__":
         "method": args.method,
         "ckpt_name": f"checkpoint-{args.ckpt_id}/pytorch_model.bin",
         "eval_lang": args.eval_lang,
-        "batch_size": 8,
+        "task_name": "XNLI-TN",
+        "batch_size": 1,
         "eval_frac": 1.0,
         "is_zero_shot": bool(args.is_zero_shot),
         "intervene_by": args.intervene_by
