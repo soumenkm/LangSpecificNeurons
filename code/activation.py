@@ -273,14 +273,14 @@ def main(model_name: str, device: torch.device) -> None:
             bnb_4bit_compute_dtype=torch.bfloat16,  
             bnb_4bit_use_double_quant=True,  
     )
-    for lang in ["vi"]:
+    for lang in ["ur"]:
         for method in ["all_act"]:
             rel = NeuronRelevance(device=device, 
                                   model_name=model_name, 
                                   quant_config=quant_config, 
                                   lang=lang, 
                                   scoring_method=method,
-                                  frac=0.5)
+                                  frac=0.25)
             out = rel.get_relevance_data(batch_size=1)
             # out = rel.get_act_stat_data(batch_size=1)
             print(out) 
