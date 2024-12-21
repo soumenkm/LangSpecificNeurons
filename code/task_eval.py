@@ -8,6 +8,7 @@ from utils import models_map
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader
 from lora_cls_finetune import LoRAFineTuner
+from models import ModelForMLM
 
 class Evaluator:
     def __init__(self, device: torch.device, config: dict):
@@ -15,8 +16,9 @@ class Evaluator:
         self.config = config
         self.config_path = self.config["config_path"]
         out = LoRAFineTuner.load_model(config_path=self.config_path, checkpoint_name=self.config["ckpt_name"], device=self.device)
-        self.model = out["model"]
+        self.model = out["model"].to(self.device)
         self.config_data = out["config_data"]
+        self.mlm_model = ModelForMLM(device=self.device, model_name=self.config_data["config"]["model_name"], quant_config=self.config_data["quant_config"]).to(self.device)
         
         self.model_name = self.config_data["config"]["model_name"]
         self.model_name_srt = self.model_name.split("/")[-1]
@@ -31,55 +33,42 @@ class Evaluator:
         if not self.eval_path.parent.exists():
             Path.mkdir(self.eval_path.parent, parents=True, exist_ok=True)
         
-    def _get_intervene_config(self, intervene_lang: str, is_activate: bool) -> dict:
-        """intervene_lang = yy"""
-        lang = intervene_lang
         lang_neuron_path = Path(Path.cwd(), f"outputs/xnli_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
         if lang_neuron_path.exists():
-            lang_neuron = pickle.load(open(lang_neuron_path, "rb"))
+            self.lang_neuron = pickle.load(open(lang_neuron_path, "rb"))
             print(f"The lang neurons data is loaded from {lang_neuron_path}")
         else:
             raise ValueError(f"{lang_neuron_path} doesn't exist!")
 
-        act_data_path = Path(Path.cwd(), f"outputs/activation/{self.model_name_srt}/act_stat/rel_{lang}.pkl")
-        if act_data_path.exists():
-            act_data = pickle.load(open(act_data_path, "rb"))
-            print(f"The activation data is loaded from {act_data_path}")
-        else:
-            raise ValueError(f"{act_data_path} doesn't exist!")
+    def _get_intervene_config(self, intervene_lang: str, batch: dict) -> dict:
+        """intervene_lang = yy"""
+        if self.config["is_zero_shot"]:
+            return None
+        lang = intervene_lang
+        self.mlm_model.eval()
+        with torch.no_grad():
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            assert batch["input_ids"].shape[0] == 1, "batch size need to be 1"
+            out = self.mlm_model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=None)
         
-        index = lang_neuron["lang_to_neuron"][lang].to(self.device) # (N, 2)
+        act_list = []
+        for layer_idx in range(len(self.mlm_model.activations.keys())):
+            act = self.mlm_model.activations[layer_idx] # (b, T, 4d)
+            mu = act.mean(dim=(0,1)) # (4d,)
+            act_list.append(mu.clone().detach()) # (L, 4d)
+        act_tensor = torch.stack(act_list, dim=0) # (L, 4d)
+        
+        index = self.lang_neuron["lang_to_neuron"][lang].to(self.device) # (N, 2)
         if self.int_by == "zero":
             intervene_config = {
                 "indices": index,
                 "value": torch.zeros(size=(index.shape[0],))
             }
-        elif self.int_by == "neg1":
-            intervene_config = {
-                "indices": index,
-                "value": torch.ones(size=(index.shape[0],)) * (-1)
-            }
-        elif self.int_by == "neg10":
-            intervene_config = {
-                "indices": index,
-                "value": torch.ones(size=(index.shape[0],)) * (-10)
-            }
-        elif self.int_by == "pos1":
-            intervene_config = {
-                "indices": index,
-                "value": torch.ones(size=(index.shape[0],)) * (1)
-            }
-        elif self.int_by == "pos10":
-            intervene_config = {
-                "indices": index,
-                "value": torch.ones(size=(index.shape[0],)) * (10)
-            }
         else:
-            mean_act = act_data[self.int_by].to(self.device) # (L, 4d)
-            value = mean_act[index[:, 0], index[:, 1]] # (N,)
+            value = act_tensor[index[:, 0], index[:, 1]] # (N,)
             intervene_config = {
                 "indices": index,
-                "value": value if is_activate else torch.zeros_like(value)
+                "value": value
             }
         return intervene_config
    
@@ -99,10 +88,11 @@ class Evaluator:
         acc = (pred_outputs.argmax(dim=-1) == true_outputs).to(torch.float32).mean()
         return torch.tensor(acc.item()) # returns the tensor as a scalar number 
     
-    def _evaluate_dataloader(self, intervene_config: Union[dict, None]) -> float:
+    def _evaluate_dataloader(self) -> float:
         with tqdm.tqdm(iterable=self.eval_dl, desc=f"[EVAL] on lang {self.eval_lang}", total=len(self.eval_dl), unit="batch", colour="green") as pbar:
             acc_list = []
-            for i, batch in enumerate(pbar):   
+            for i, batch in enumerate(pbar):  
+                intervene_config = self._get_intervene_config(intervene_lang=self.eval_lang, batch=batch)
                 pred_out = self._forward_batch(batch=batch, intervene_config=intervene_config) # (b, c)  
                 true_out = batch["labels"] # (b,)   
                 acc = self._calc_acc_batch(pred_outputs=pred_out, true_outputs=true_out)
@@ -117,13 +107,11 @@ class Evaluator:
             return None
         
         lang = self.eval_lang
-        intervene_config = self._get_intervene_config(intervene_lang=self.eval_lang, is_activate=True)
-
         self.eval_ds = XNLIDatasetHF(model_name=self.model_name, lang=lang, max_context_len=self.config_data["config"]["max_context_length"], frac=self.config["eval_frac"], is_train=False)
         self.eval_dl = DataLoader(self.eval_ds, batch_size=self.config["batch_size"], shuffle=False, drop_last=True)
         
         if self.config["is_zero_shot"]:
-            acc = self._evaluate_dataloader(intervene_config=None)
+            acc = self._evaluate_dataloader()
             if self.train_lang == lang:
                 res1 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Direct acc: {acc}"
             else:
@@ -132,7 +120,7 @@ class Evaluator:
             res1 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Zero shot acc: NOT CALCULATED"                
             
         print(res1)
-        int_acc = self._evaluate_dataloader(intervene_config=intervene_config)
+        int_acc = self._evaluate_dataloader()
         res2 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Intervene acc: {int_acc}"
         print(res2)
         
