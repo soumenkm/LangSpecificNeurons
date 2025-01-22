@@ -110,6 +110,70 @@ class WikipediaDatasetHF(Dataset):
         }         
         return item
 
+class XQADatasetHF(Dataset):
+    def __init__(self, model_name: str, lang: str, max_context_len: int, frac: float, is_train: bool) -> None:
+        super(XQADatasetHF, self).__init__()
+        self.cwd = Path.cwd()
+        self.lang = lang
+        self.frac = frac
+        self.is_train = is_train
+        self.model_name = model_name.split("/")[-1]
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.Tmax = max_context_len
+        self.ds = self.get_dataset()
+    
+    def get_alpaca_formatted_input(self, example: dict) -> str:
+        instruction = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+        ### Instruction:
+        Answer the question based on the given context.
+
+        ### Input:
+        Context: {context} Question: {question}
+
+        ### Response:
+        {answer_text}
+        """
+        
+        context = example["context"]
+        question = example["question"]
+        answer_text = example["answers"]["text"]
+        eos_token = self.tokenizer.eos_token
+        return instruction.format(context=context, question=question, answer_text=answer_text)
+    
+    def get_dataset(self) -> Dataset:
+        ds_dict = load_dataset("google/xquad", f"xquad.{self.lang}")
+        ds = ds_dict["validation"]
+        ds_train = ds.select(range(0, int(len(ds) * 0.85)))
+        ds_test = ds.select(range(int(len(ds) * 0.85), -1))
+        ds = ds_train if self.is_train else ds_test
+        size = int(len(ds) * self.frac)
+        subset_ds = ds.select(range(size)) # do not apply shuffling
+        dsl = [subset_ds[i] for i in range(len(subset_ds))]
+        
+        filter_dsl = []
+        with tqdm.tqdm(iterable=range(len(dsl)), desc="Preparing dataset...", unit="example", colour="green") as pbar:
+            for index in pbar:
+                inputs = self.get_alpaca_formatted_input(example=dsl[index])
+                outputs = self.tokenizer(inputs, padding="max_length", truncation=True, max_length=512, return_tensors="pt") # (1, Tmax)
+                labels = outputs["input_ids"].clone() 
+                labels = labels[:, 1:]  # Shift left by 1
+                labels[:, -1] = self.tokenizer.eos_token_id
+                seq_len = outputs["attention_mask"].sum().item()
+                if seq_len < self.Tmax:
+                    outputs["input_ids"] = outputs["input_ids"][0, :self.Tmax] # (Tmax,)
+                    outputs["attention_mask"] = outputs["attention_mask"][0, :self.Tmax] # (Tmax,)
+                    outputs["labels"] = labels[0, :self.Tmax] # (Tmax,)
+                    filter_dsl.append(outputs)
+        return filter_dsl
+    
+    def __len__(self) -> int:
+        return len(self.ds)
+    
+    def __getitem__(self, index: int) -> dict:
+        return self.ds[index]
+
 def main_wiki(model_name: str):
     ds = WikipediaDatasetHF(model_name=model_name, lang="en", max_context_len=256)
     print(len(ds))
@@ -119,8 +183,13 @@ def main_xnli(model_name: str):
     print(len(ds))
     print("DONE")
 
+def main_xqad(model_name: str):
+    ds = XQADatasetHF(model_name=model_name, lang="en", max_context_len=512, frac=1.0, is_train=True)
+    print(len(ds))
+    print("DONE")
+    
 if __name__ == "__main__":
-    ml = ["llama2"]
+    ml = ["llama3"]
     for model_key in ml:
-        main_wiki(model_name=models_map[model_key])
+        main_xqad(model_name=models_map[model_key])
         print(f"Model: {model_key} done!")
