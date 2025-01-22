@@ -1,6 +1,6 @@
 import json, os, sys, tqdm, pickle, datetime, random
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
 import torch
 torch.manual_seed(42)
@@ -273,10 +273,13 @@ def main(model_name: str, device: torch.device) -> None:
             bnb_4bit_compute_dtype=torch.bfloat16,  
             bnb_4bit_use_double_quant=True,  
     )
-    for lang in ["ur", "id", "zh", "ja"]:
+    for lang in ["es", "fr", "id", "ja", "zh", "bn"]:
         for method in ["all_act"]:
             rel = NeuronRelevance(device=device, model_name=model_name, quant_config=quant_config, lang=lang, scoring_method=method)
-            out = rel.get_relevance_data(batch_size=4, data_frac=0.5)
+            if method == "act_stat":
+                out = rel.get_act_stat_data(batch_size=4, data_frac=0.25)
+            else:
+                out = rel.get_relevance_data(batch_size=4, data_frac=0.5)
             print(out) 
     print("DONE")
     
@@ -284,6 +287,6 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
-    main(models_map["llama3"], device=device)
+    main(models_map["bloomz"], device=device)
     
     

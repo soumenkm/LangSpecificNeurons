@@ -1,6 +1,6 @@
 import os, torch, json, sys
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 
 torch.manual_seed(42)
 from pathlib import Path
@@ -35,8 +35,8 @@ class ModelForMLM(torch.nn.Module):
         m = self.model_name.lower()
         if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
             layers = self.model.model.layers
-        elif "bloom" in m:
-            layers = self.model.model.transformer.h
+        elif "bloomz" in m:
+            layers = self.model.transformer.h
         else:
             raise NotImplementedError("Invalid model name!")
         return layers
@@ -47,7 +47,7 @@ class ModelForMLM(torch.nn.Module):
         if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
             target_module = mlp.gate_proj
             name = "gate_proj"
-        elif "bloom" in m:
+        elif "bloomz" in m:
             target_module = mlp.dense_h_to_4h
             name = "dense_h_to_4h"
         else:
@@ -351,9 +351,16 @@ class ModelForCLSWithLoRA(torch.nn.Module):
         
         self.rank = lora_rank
         self.alpha = lora_alpha
-        self.apply_lora(rank=self.rank, alpha=self.alpha, frozen_neurons=frozen_neurons)
+        m = self.model_name.lower()
+        if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
+            layer_names = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
+        elif "bloomz" in m:
+            layer_names = ['query_key_value', 'dense']
+        else:
+            raise NotImplementedError("Invalid model name!")
+        self.apply_lora(rank=self.rank, alpha=self.alpha, frozen_neurons=frozen_neurons, layer_names=layer_names)
     
-    def apply_lora(self, rank: int, alpha: float, frozen_neurons: Union[None, torch.tensor]) -> None:
+    def apply_lora(self, rank: int, alpha: float, frozen_neurons: Union[None, torch.tensor], layer_names: List[str]) -> None:
         """frozen_neuron_ids = [(i, j) | j: neuron index for a layer i]
         """
         if frozen_neurons is not None:
@@ -373,18 +380,18 @@ class ModelForCLSWithLoRA(torch.nn.Module):
                     up_proj_lora = LinearWithLoRA(up_proj_linear, rank, alpha, mask_A, mask_B)
                     setattr(target_module, target_linear_name, up_proj_lora)
                     
-        ModelForCLSWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha)            
+        ModelForCLSWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=layer_names)            
 
     @staticmethod
-    def replace_linear_with_lora(device: torch.device, model: torch.nn.Module, rank: int, alpha: float):
+    def replace_linear_with_lora(device: torch.device, model: torch.nn.Module, rank: int, alpha: float, layer_names: List[str]):
         for name, module in model.named_children():
             if isinstance(module, torch.nn.Linear):
-                if any(proj in name for proj in ['q_proj', 'k_proj', 'v_proj', 'o_proj']):
+                if any(proj in name for proj in layer_names):
                     mask_A, mask_B = ModelForCLSWithLoRA.create_lora_mask(device=device, d_in=module.in_features, d_out=module.out_features, rank=rank, frozen_neuron_ids=None)
                     linear_lora = LinearWithLoRA(module, rank, alpha, mask_A, mask_B)
                     setattr(model, name, linear_lora) # parent is model, child is module
             else:
-                ModelForCLSWithLoRA.replace_linear_with_lora(device, module, rank, alpha)
+                ModelForCLSWithLoRA.replace_linear_with_lora(device, module, rank, alpha, layer_names)
     
     @staticmethod
     def create_lora_mask(device: torch.device, d_in: int, d_out: int, rank: int, frozen_neuron_ids: Union[None, torch.tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -413,8 +420,8 @@ class ModelForCLSWithLoRA(torch.nn.Module):
         m = self.model_name.lower()
         if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
             layers = self.model.base.layers
-        elif "bloom" in m:
-            layers = self.model.base.transformer.h
+        elif "bloomz" in m:
+            layers = self.model.base.h
         else:
             raise NotImplementedError("Invalid model name!")
         return layers
@@ -424,7 +431,7 @@ class ModelForCLSWithLoRA(torch.nn.Module):
         mlp = self.get_layers()[layer_idx].mlp
         if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
             target_module = mlp.act_fn
-        elif "bloom" in m:
+        elif "bloomz" in m:
             target_module = mlp.gelu_impl
         else:
             raise NotImplementedError("Invalid model name!")
@@ -486,7 +493,7 @@ def main_lora(model_name: str, device: torch.device) -> None:
             bnb_4bit_use_double_quant=True,  
     )
     fn = torch.tensor([[0,1], [0,2], [1,1], [1,2]])
-    model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=1e-8, num_class=3, lora_rank=8, lora_alpha=16, quant_config=quant_config, frozen_neurons=fn).to(device)
+    model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=None, num_class=3, lora_rank=8, lora_alpha=16, quant_config=quant_config, frozen_neurons=fn).to(device)
     input_ids = torch.randint(low=0, high=100, size=(16, 256)).to(device) # (b, T)
     labels = torch.randint(low=0, high=3, size=(16,)).to(device) # (b,)
     attention_mask = torch.ones(size=(16, 256)).to(device) # (b, T)
@@ -513,23 +520,31 @@ def main_mlm(model_name: str, device: torch.device) -> None:
             bnb_4bit_compute_dtype=torch.bfloat16,  
             bnb_4bit_use_double_quant=True,  
     )
-    model = ModelForMLMWithIntervention(device=device, model_name=model_name, quant_config=quant_config).to(device)
+    # model = ModelForMLMWithIntervention(device=device, model_name=model_name, quant_config=quant_config).to(device)
+    # print(model)
+    # intervene_config = {
+    #     "indices": torch.tensor([[0,1], [1,2], [2,3], [2,4], [2,5]]),
+    #     "value": torch.tensor([0, 0, 0, 0, 0])
+    # }
+    # model.eval()
+    # with torch.no_grad(), torch.autocast("cuda"):
+    #     out1 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], intervene_config=None, labels=input_dict["labels"]) # (b, c)
+    #     out2 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], intervene_config=intervene_config, labels=input_dict["labels"]) # (b, c)
+    # print(out1["logits"].sum(), out1["loss"]) 
+    # print(out2["logits"].sum(), out2["loss"])  
+    
+    model = ModelForMLM(device=device, model_name=model_name, quant_config=quant_config)
     print(model)
-    intervene_config = {
-        "indices": torch.tensor([[0,1], [1,2], [2,3], [2,4], [2,5]]),
-        "value": torch.tensor([0, 0, 0, 0, 0])
-    }
     model.eval()
     with torch.no_grad(), torch.autocast("cuda"):
-        out1 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], intervene_config=None, labels=input_dict["labels"]) # (b, c)
-        out2 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], intervene_config=intervene_config, labels=input_dict["labels"]) # (b, c)
-    print(out1["logits"].sum(), out1["loss"]) 
-    print(out2["logits"].sum(), out2["loss"])  
+        out1 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], labels=input_dict["labels"]) # (b, c)
+    print(out1["pred_labels"].shape, out1["loss"]) 
     
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
     # main_mlm(models_map["llama3"], device=device)
-    main_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
+    # main_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
+    main_lora("bigscience/bloomz-7b1", device=device)
     
