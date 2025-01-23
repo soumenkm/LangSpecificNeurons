@@ -132,9 +132,11 @@ class LoRAFineTuner:
     
     def _get_frozen_neurons(self) -> torch.tensor:
         lang_neuron = self._get_lang_neuron(method=self.method)
-        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])) # (4Ld, 2)
+        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])).to(self.device) # (4Ld, 2)
         if self.finetune_lang == "null":
-            return None
+            return None 
+        elif self.finetune_lang == "all_mlp": 
+            return all_neurons # !TODO: Caution! This is temporary change to see if MLP training helps
         elif "+" in self.finetune_lang:
             lang1, lang2 = self.finetune_lang.split("+")
             if "set" in lang1:
@@ -198,7 +200,7 @@ class LoRAFineTuner:
 def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XNLI-FT",
-        "method": "lape/set1", "lang": "en", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
+        "method": "lape/set1", "lang": "en", "finetune_lang": "all_mlp", # ["en", "vi", "en+vi", "null", "set1_en"]
         "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 5e-6, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
