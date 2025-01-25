@@ -1,7 +1,7 @@
 import os, json, pickle, torch, wandb
 if __name__ == "__main__":
     wandb.login()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "6"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "5"
     
 torch.manual_seed(42)
 from pathlib import Path
@@ -29,7 +29,7 @@ class LoRAFineTuner:
         self.model_name = config["model_name"]
         self.model_name_srt = self.model_name.split("/")[-1]
         self.lang = config["lang"]
-        self.ds = XQADatasetHF(model_name=self.model_name, lang=self.lang, max_context_len=self.config["max_context_length"], frac=1.0)
+        self.ds = XQADatasetHF(model_name=self.model_name, lang=self.lang, max_context_len=self.config["max_context_length"], frac=1.0, is_train=True)
         self.train_ds = Subset(dataset=self.ds, indices=range(int(len(self.ds) * self.config['frac'])))
         self.data_collator = DefaultDataCollator(return_tensors="pt")
         self.tokenizer = self.ds.tokenizer
@@ -155,9 +155,9 @@ def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XQUAD-LoRA-FT",
         "lang": "en",
-        "num_epochs": 5, "batch_size": 8, "max_context_length": 512, # steps are auto calculated
+        "num_epochs": 10, "batch_size": 8, "max_context_length": 512, # steps are auto calculated
         "frac": 1.0, 
-        "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
+        "initial_lr": 4e-5, "num_class": 3, "lora_rank": 64, "lora_alpha": 128, "max_grad_norm": 10.0, "weight_decay": 0.1,
         "adam_betas": (0.95, 0.999), "grad_acc_steps": 1, "num_ckpt_per_epoch": 2, "is_4bit_quant": True, "fp16": False, "bf16": True,
         "wandb_log": True
     }

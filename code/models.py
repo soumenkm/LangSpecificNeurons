@@ -1,6 +1,6 @@
 import os, torch, json, sys
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "6"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 
 torch.manual_seed(42)
 from pathlib import Path
@@ -245,9 +245,11 @@ class ModelForCLS(torch.nn.Module):
         if labels is not None:
             labels = labels.to(self.device)  
             loss = self.loss_fn(out, labels) 
+            acc = (out.argmax(dim=-1) == labels).to(torch.float32).mean()
         else:
             loss = None
-        return {"logits": out, "loss": loss}
+            acc = None
+        return {"logits": out, "loss": loss, "acc": acc.item()}
 
 class SparseModelForCLS(torch.nn.Module):
     def __init__(self, device: torch.device, model_name: str, num_class: int, quant_config: Union[BitsAndBytesConfig, None], alpha: float):
@@ -356,7 +358,8 @@ class ModelForCLSWithLoRA(torch.nn.Module):
         if ("llama" in m) or ("mistral" in m) or ("sarvam" in m) or ("aya-23" in m):
             layer_names = ['q_proj', 'k_proj', 'v_proj', 'o_proj']
         elif "bloomz" in m:
-            layer_names = ['query_key_value', 'dense']
+            # layer_names = ['query_key_value', 'dense']
+            layer_names = ['query_key_value', 'dense', 'dense_4h_to_h']
         else:
             raise NotImplementedError("Invalid model name!")
         self.apply_lora(rank=self.rank, alpha=self.alpha, frozen_neurons=frozen_neurons, layer_names=layer_names)
@@ -364,22 +367,22 @@ class ModelForCLSWithLoRA(torch.nn.Module):
     def apply_lora(self, rank: int, alpha: float, frozen_neurons: Union[None, torch.tensor], layer_names: List[str]) -> None:
         """frozen_neuron_ids = [(i, j) | j: neuron index for a layer i]
         """
-        if frozen_neurons is not None:
-            frozen_neurons_dict = {}
-            for (layer_idx, neuron_idx) in frozen_neurons:
-                layer_idx = layer_idx.item()
-                if layer_idx not in frozen_neurons_dict:
-                    frozen_neurons_dict[layer_idx] = []
-                frozen_neurons_dict[layer_idx].append(neuron_idx.item())
+        # if frozen_neurons is not None:
+        #     frozen_neurons_dict = {}
+        #     for (layer_idx, neuron_idx) in frozen_neurons:
+        #         layer_idx = layer_idx.item()
+        #         if layer_idx not in frozen_neurons_dict:
+        #             frozen_neurons_dict[layer_idx] = []
+        #         frozen_neurons_dict[layer_idx].append(neuron_idx.item())
 
-            for layer_idx, layer in enumerate(self.get_layers()):
-                target_linear_name, target_module = self.get_target_linear_module(layer_idx=layer_idx)
-                if layer_idx in frozen_neurons_dict:
-                    frozen_neuron_ids = frozen_neurons_dict[layer_idx]
-                    up_proj_linear = getattr(target_module, target_linear_name)
-                    mask_A, mask_B = ModelForCLSWithLoRA.create_lora_mask(device=self.device, d_in=up_proj_linear.in_features, d_out=up_proj_linear.out_features, rank=rank, frozen_neuron_ids=frozen_neuron_ids)
-                    up_proj_lora = LinearWithLoRA(up_proj_linear, rank, alpha, mask_A, mask_B)
-                    setattr(target_module, target_linear_name, up_proj_lora)
+        #     for layer_idx, layer in enumerate(self.get_layers()):
+        #         target_linear_name, target_module = self.get_target_linear_module(layer_idx=layer_idx)
+        #         if layer_idx in frozen_neurons_dict:
+        #             frozen_neuron_ids = frozen_neurons_dict[layer_idx]
+        #             up_proj_linear = getattr(target_module, target_linear_name)
+        #             mask_A, mask_B = ModelForCLSWithLoRA.create_lora_mask(device=self.device, d_in=up_proj_linear.in_features, d_out=up_proj_linear.out_features, rank=rank, frozen_neuron_ids=frozen_neuron_ids)
+        #             up_proj_lora = LinearWithLoRA(up_proj_linear, rank, alpha, mask_A, mask_B)
+        #             setattr(target_module, target_linear_name, up_proj_lora)
                     
         ModelForCLSWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=layer_names)            
 
@@ -492,30 +495,38 @@ class ModelForCLM(torch.nn.Module):
         self.model_name = model_name
         self.model_name_srt = model_name.split("/")[-1]
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-        self.tokenizer.add_special_tokens({"sep_token": "[SEP]"})
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+
         self.base = AutoModelForCausalLM.from_pretrained(self.model_name, quantization_config=quant_config, device_map="auto")
         self.d = self.base.config.hidden_size
-        self.base.resize_token_embeddings(len(self.tokenizer))
+        # self.base.resize_token_embeddings(len(self.tokenizer))
         self.base.config.pad_token_id = self.tokenizer.pad_token_id
     
-    def compute_metrics_manually(self, z, labels):
-        # z.shape = (b, T, V), labels.shape = (b, T)
+    def compute_metrics_manually(self, z, labels, acc_mask):
+        # z.shape = (b, T, V), labels.shape = (b, T), acc_mask.shape = (b, T)
         pred_prob = torch.nn.functional.softmax(z, dim=-1) # (b, T, V) 
         i, j = torch.where(labels != -100)
         filter_pred_prob = pred_prob[i, j] # (N, V)
         filter_true_class = labels[labels != -100] # (N,)
         filter_true_prob = torch.nn.functional.one_hot(filter_true_class, num_classes=filter_pred_prob.shape[-1]) # (N, V)
         cross_entropy = (-filter_true_prob * torch.log(filter_pred_prob)).sum(dim=1).mean()
-        acc = (filter_pred_prob.argmax() == filter_true_class).to(torch.float32).mean()
-        return {"loss": cross_entropy.item(), "acc": acc.item()}
+        
+        i, j = torch.where(acc_mask != 0)
+        filter_pred_prob = pred_prob[i, j] # (N, V)
+        filter_true_class = labels[acc_mask != 0] # (N,)
+        filter_true_prob = torch.nn.functional.one_hot(filter_true_class, num_classes=filter_pred_prob.shape[-1]) # (N, V)
+        cross_entropy_ans = (-filter_true_prob * torch.log(filter_pred_prob)).sum(dim=1).mean()
+        acc = (filter_pred_prob.argmax(dim=-1) == filter_true_class).to(torch.float32).mean()
+        return {"loss": cross_entropy.item(), "loss_ans": cross_entropy_ans.item(), "acc": acc.item()}
      
-    def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, labels: Union[None, torch.tensor]) -> torch.tensor:
+    def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, labels: Union[None, torch.tensor], acc_mask: Union[None, torch.tensor]) -> torch.tensor:
         z = self.base(input_ids=input_ids, attention_mask=attention_mask).logits # (b, T, d)
         if labels is not None:
             labels = labels.to(self.device)  
             loss = torch.nn.functional.cross_entropy(z.flatten(0, 1), labels.flatten(), ignore_index=-100) 
-            acc = self.compute_metrics_manually(z, labels)["acc"]
+            acc = self.compute_metrics_manually(z, labels, acc_mask)["acc"]
         else:
             loss = None
             acc = None
@@ -536,8 +547,8 @@ class ModelForCLMWithLoRA(torch.nn.Module):
         self.apply_lora(rank=self.rank, alpha=self.alpha)
     
     def apply_lora(self, rank: int, alpha: float) -> None:
-        ModelForCLMWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=['q_proj', 'k_proj', 'v_proj', 'o_proj'])            
-        ModelForCLMWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=["lm_head"])            
+        ModelForCLMWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=['q_proj', 'k_proj', 'v_proj'])            
+        # ModelForCLMWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=["lm_head"])            
 
     @staticmethod
     def replace_linear_with_lora(device: torch.device, model: torch.nn.Module, rank: int, alpha: float, layer_names: List[str]):
@@ -628,7 +639,7 @@ class ModelForCLMWithLoRA(torch.nn.Module):
         for h in self.hooks_list:
             h.remove()
     
-    def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, intervene_config: Union[dict, None] = None, labels: Union[torch.tensor, None] = None) -> torch.tensor:
+    def forward(self, input_ids: torch.tensor, attention_mask: torch.tensor, intervene_config: Union[dict, None] = None, labels: Union[torch.tensor, None] = None, acc_mask: Union[None, torch.tensor] = None) -> torch.tensor:
         """intervene_config = {
             "indices": [(i, j) | i: layer index, j: neuron index]
             "value": [i | for each index i in indices])
@@ -636,39 +647,12 @@ class ModelForCLMWithLoRA(torch.nn.Module):
         assert list(input_ids.shape).__len__() == 2, "inputs rank must be 2 and inputs.shape = (b, T)"
         if intervene_config is not None:
             self.register_hook(intervene_config=intervene_config)
-            prediction_output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels) # (b, c)
+            prediction_output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, acc_mask=acc_mask) # (b, c)
             self.remove_hook()
         else:
-            prediction_output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels) # (b, c)
+            prediction_output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels, acc_mask=acc_mask) # (b, c)
         return prediction_output
-  
-        
-def main_lora(model_name: str, device: torch.device) -> None:
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    quant_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type='nf4',  
-            bnb_4bit_compute_dtype=torch.bfloat16,  
-            bnb_4bit_use_double_quant=True,  
-    )
-    fn = torch.tensor([[0,1], [0,2], [1,1], [1,2]])
-    model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=1e-8, num_class=3, lora_rank=8, lora_alpha=16, quant_config=quant_config, frozen_neurons=fn).to(device)
-    input_ids = torch.randint(low=0, high=100, size=(16, 256)).to(device) # (b, T)
-    labels = torch.randint(low=0, high=3, size=(16,)).to(device) # (b,)
-    attention_mask = torch.ones(size=(16, 256)).to(device) # (b, T)
-    print(model)
-    model.calc_num_lora_params()
-    intervene_config = {
-        "indices": torch.tensor([[0,1], [1,2], [2,3], [2,4], [2,5]]),
-        "value": torch.tensor([0, 0, 0, 0, 0])
-    }
-    model.train()
-    with torch.autocast("cuda"):
-        out1 = model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels) # (b, c)
-        out2 = model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=intervene_config, labels=labels) # (b, c)
-    print(out1["logits"].sum(), out1["loss"]) 
-    print(out2["logits"].sum(), out2["loss"])
-
+         
 def main_clm(model_name: str, device: torch.device) -> None:
     quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -677,20 +661,21 @@ def main_clm(model_name: str, device: torch.device) -> None:
             bnb_4bit_use_double_quant=True,  
     )
     model = ModelForCLMWithLoRA(device=device, model_name=model_name, lora_rank=8, lora_alpha=16, quant_config=quant_config).to(device)
-    ds = XQADatasetHF(model_name=model_name, lang="en", max_context_len=512, frac=0.1)
+    ds = XQADatasetHF(model_name=model_name, lang="en", max_context_len=1024, frac=1.0, is_train=True)
     data_collator = DefaultDataCollator(return_tensors="pt")
     batch = data_collator([ds[0], ds[1], ds[2], ds[3], ds[4]])
     input_ids = batch["input_ids"].to(device) # (b, T)
     labels = batch["labels"].to(device) # (b, T)
     attention_mask = batch["attention_mask"].to(device) # (b, T)
+    acc_mask = batch["acc_mask"].to(device) # (b, T)
     print(model)
     model.calc_num_params()
     model.train()
     with torch.autocast("cuda"):
-        out = model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels) # (b, c)
-    print(out["logits"].sum(), out["loss"])
+        out = model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels, acc_mask=acc_mask) # (b, c)
+    print(out["logits"].max(), out["logits"].min(), out["loss"], out["acc"])
      
-def main_lora(model_name: str, device: torch.device) -> None:
+def main_cls(model_name: str, device: torch.device) -> None:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -716,41 +701,11 @@ def main_lora(model_name: str, device: torch.device) -> None:
     print(out1["logits"].sum(), out1["loss"]) 
     print(out2["logits"].sum(), out2["loss"])
 
-def main_mlm(model_name: str, device: torch.device) -> None:
-    ds = WikipediaDatasetHF(model_name=model_name, lang="en", max_context_len=512)
-    dl = DataLoader(dataset=ds, batch_size=4)
-    input_dict = next(iter(dl))
-    quant_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type='nf4',  
-            bnb_4bit_compute_dtype=torch.bfloat16,  
-            bnb_4bit_use_double_quant=True,  
-    )
-    # model = ModelForMLMWithIntervention(device=device, model_name=model_name, quant_config=quant_config).to(device)
-    # print(model)
-    # intervene_config = {
-    #     "indices": torch.tensor([[0,1], [1,2], [2,3], [2,4], [2,5]]),
-    #     "value": torch.tensor([0, 0, 0, 0, 0])
-    # }
-    # model.eval()
-    # with torch.no_grad(), torch.autocast("cuda"):
-    #     out1 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], intervene_config=None, labels=input_dict["labels"]) # (b, c)
-    #     out2 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], intervene_config=intervene_config, labels=input_dict["labels"]) # (b, c)
-    # print(out1["logits"].sum(), out1["loss"]) 
-    # print(out2["logits"].sum(), out2["loss"])  
-    
-    model = ModelForMLM(device=device, model_name=model_name, quant_config=quant_config)
-    print(model)
-    model.eval()
-    with torch.no_grad(), torch.autocast("cuda"):
-        out1 = model(input_ids=input_dict["input_ids"], attention_mask=input_dict["attention_mask"], labels=input_dict["labels"]) # (b, c)
-    print(out1["pred_labels"].shape, out1["loss"]) 
-    
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
     main_clm(models_map["llama3"], device=device)
-    # main_lora("meta-llama/Meta-Llama-3.1-8B", device=device)
+    # main_cls(models_map["aya23"], device=device)
     # main_lora("bigscience/bloomz-7b1", device=device)
     

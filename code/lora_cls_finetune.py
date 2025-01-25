@@ -53,8 +53,8 @@ class LoRAFineTuner:
 
         self.train_arg_config = {
             "output_dir": self.output_dir,
-            "eval_strategy": "steps",
-            "eval_steps": max(self.batch_size, self.num_steps//self.config["num_ckpt_per_epoch"]),
+            "eval_strategy": "no",
+            # "eval_steps": max(self.batch_size, self.num_steps//self.config["num_ckpt_per_epoch"]),
             "per_device_train_batch_size": self.batch_size,
             "per_device_eval_batch_size": self.batch_size,
             "gradient_accumulation_steps": self.config["grad_acc_steps"],
@@ -82,10 +82,10 @@ class LoRAFineTuner:
             "args": self.training_args,
             "data_collator": self.data_collator,
             "train_dataset": self.train_ds,
-            "eval_dataset": self.eval_ds,
+            # "eval_dataset": self.eval_ds,
             "tokenizer": self.tokenizer,
             "optimizers": (self.optimizer, self.scheduler),
-            "compute_metrics": self.compute_metrics
+            # "compute_metrics": self.compute_metrics
         }
         self.trainer = Trainer(**self.trainer_config)
     
@@ -131,11 +131,13 @@ class LoRAFineTuner:
         return lang_neuron
     
     def _get_frozen_neurons(self) -> torch.tensor:
-        lang_neuron = self._get_lang_neuron(method=self.method)
-        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])).to(self.device) # (4Ld, 2)
         if self.finetune_lang == "null":
             return None 
-        elif self.finetune_lang == "all_mlp": 
+        
+        lang_neuron = self._get_lang_neuron(method=self.method)
+        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])).to(self.device) # (4Ld, 2)
+        
+        if self.finetune_lang == "all_mlp": 
             return all_neurons # !TODO: Caution! This is temporary change to see if MLP training helps
         elif "+" in self.finetune_lang:
             lang1, lang2 = self.finetune_lang.split("+")
@@ -200,10 +202,10 @@ class LoRAFineTuner:
 def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XNLI-FT",
-        "method": "lape/set1", "lang": "en", "finetune_lang": "all_mlp", # ["en", "vi", "en+vi", "null", "set1_en"]
-        "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
+        "method": "lape/set1", "lang": "en", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
+        "num_epochs": 2, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
-        "initial_lr": 5e-6, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
+        "initial_lr": 1e-6, "num_class": 3, "lora_rank": 64, "lora_alpha": 128, "max_grad_norm": 10.0, "weight_decay": 0.1,
         "adam_betas": (0.95, 0.999), "grad_acc_steps": 1, "num_ckpt_per_epoch": 4, "is_4bit_quant": True, "fp16": False, "bf16": True,
         "wandb_log": True
     }
@@ -214,4 +216,4 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
-    main(models_map["bloomz"], device=device)
+    main(models_map["aya23"], device=device)
