@@ -533,10 +533,11 @@ class ModelForCLM(torch.nn.Module):
         return {"logits": z, "loss": loss, "acc": acc}
 
 class ModelForCLMWithLoRA(torch.nn.Module):
-    def __init__(self, device: torch.device, model_name: str, lora_rank: int, lora_alpha: float, quant_config: Union[None, BitsAndBytesConfig]):
+    def __init__(self, device: torch.device, model_name: str, lora_rank: int, lora_alpha: float, quant_config: Union[None, BitsAndBytesConfig], frozen_neurons):
         super(ModelForCLMWithLoRA, self).__init__()
         self.model_name = model_name
         self.device = device
+        self.frozen_neurons = frozen_neurons
         self.model = ModelForCLM(device=self.device, model_name=self.model_name, quant_config=quant_config)
         
         for param in self.model.base.parameters():
@@ -544,9 +545,26 @@ class ModelForCLMWithLoRA(torch.nn.Module):
         
         self.rank = lora_rank
         self.alpha = lora_alpha
-        self.apply_lora(rank=self.rank, alpha=self.alpha)
+        self.apply_lora(rank=self.rank, alpha=self.alpha, frozen_neurons=self.frozen_neurons)
     
-    def apply_lora(self, rank: int, alpha: float) -> None:
+    def apply_lora(self, frozen_neurons, rank: int, alpha: float) -> None:
+        if frozen_neurons is not None:
+            frozen_neurons_dict = {}
+            for (layer_idx, neuron_idx) in frozen_neurons:
+                layer_idx = layer_idx.item()
+                if layer_idx not in frozen_neurons_dict:
+                    frozen_neurons_dict[layer_idx] = []
+                frozen_neurons_dict[layer_idx].append(neuron_idx.item())
+
+            for layer_idx, layer in enumerate(self.get_layers()):
+                target_linear_name, target_module = self.get_target_linear_module(layer_idx=layer_idx)
+                if layer_idx in frozen_neurons_dict:
+                    frozen_neuron_ids = frozen_neurons_dict[layer_idx]
+                    up_proj_linear = getattr(target_module, target_linear_name)
+                    mask_A, mask_B = ModelForCLSWithLoRA.create_lora_mask(device=self.device, d_in=up_proj_linear.in_features, d_out=up_proj_linear.out_features, rank=rank, frozen_neuron_ids=frozen_neuron_ids)
+                    up_proj_lora = LinearWithLoRA(up_proj_linear, rank, alpha, mask_A, mask_B)
+                    setattr(target_module, target_linear_name, up_proj_lora)
+                
         ModelForCLMWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=['q_proj', 'k_proj', 'v_proj'])            
         # ModelForCLMWithLoRA.replace_linear_with_lora(device=self.device, model=self.model.base, rank=rank, alpha=alpha, layer_names=["lm_head"])            
 

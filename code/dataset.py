@@ -128,22 +128,34 @@ class XQADatasetHF(Dataset):
         self.ds = self.get_dataset()
     
     def get_alpaca_formatted_input(self, example: dict) -> str:
-        instruction = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
-
-        ### Instruction:
-        Answer the question based on the given context.
-
-        ### Input:
-        Context: {context} 
-        Question: {question}
-
-        ### Response: {answer_text}""".strip()
-        
         context = example["context"].strip()
         question = example["question"].strip()
         answer_text = example["answers"]["text"][0].strip() + self.tokenizer.eos_token
-        return instruction.format(context=context, question=question, answer_text=answer_text)
-    
+        if self.is_train:
+            instruction = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+            ### Instruction:
+            Answer the question based on the given context.
+
+            ### Input:
+            Context: {context} 
+            Question: {question}
+
+            ### Response: {answer_text}""".strip()
+            return instruction.format(context=context, question=question, answer_text=answer_text)
+        else:
+            instruction = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+            ### Instruction:
+            Answer the question based on the given context.
+
+            ### Input:
+            Context: {context} 
+            Question: {question}
+
+            ### Response:""".strip()
+            return instruction.format(context=context, question=question)
+        
     def find_subsequence_positions(self, tensor, subsequence):
         # Ensure both tensor and subsequence are 1D
         if tensor.ndim != 1 or subsequence.ndim != 1:
@@ -171,50 +183,54 @@ class XQADatasetHF(Dataset):
         with tqdm.tqdm(iterable=range(len(dsl)), desc="Preparing dataset...", unit="example", colour="green") as pbar:
             for index in pbar:
                 inputs = self.get_alpaca_formatted_input(example=dsl[index])
-                outputs = self.tokenizer(inputs, padding="max_length", truncation=True, max_length=self.Tmax, return_tensors="pt") # (Tmax,)
-                
+                if self.is_train:
+                    outputs = self.tokenizer(inputs, padding="max_length", truncation=True, max_length=self.Tmax, return_tensors="pt") # (Tmax,)
+                else:
+                    outputs = self.tokenizer(inputs, padding=False, truncation=True, max_length=self.Tmax, return_tensors="pt") # (Tmax,)
+                    
                 seq_len = outputs["attention_mask"].sum().item()
                 if seq_len >= self.Tmax - 1:
                     continue
                 
-                # Clone the input_ids to create labels
-                labels = outputs["input_ids"][0].clone()[1:]
-                labels = torch.concat([labels, torch.tensor([self.tokenizer.pad_token_id])], dim=-1)
-                orig_labels = labels.clone()
+                if self.is_train:
+                    # Clone the input_ids to create labels
+                    labels = outputs["input_ids"][0].clone()[1:]
+                    labels = torch.concat([labels, torch.tensor([self.tokenizer.pad_token_id])], dim=-1)
+                    orig_labels = labels.clone()
+                    
+                    # Create the mask (whole instruction) for loss
+                    reversed_labels = labels.flip(dims=[0])
+                    target_token_id = self.tokenizer(inputs, padding=False, truncation=True, max_length=self.Tmax, return_tensors="pt")["input_ids"][0, -2] # (Tmax,)
+                    pos_target_token_id = torch.where(reversed_labels == target_token_id)[0][0]
+                    answer_end_index = len(labels) - pos_target_token_id - 1
+                    labels[answer_end_index+2:] = -100
+                    
+                    # Get the range of answer text
+                    reversed_labels = labels.clone().flip(dims=[0])
+                    answer_text = " " + dsl[index]["answers"]["text"][0].strip()
+                    target_token_id = self.tokenizer(answer_text, padding=False, truncation=True, max_length=self.Tmax, return_tensors="pt", add_special_tokens=False)["input_ids"][0] # (Tmax,)
+                    reversed_target_token_id = target_token_id.clone().flip(dims=[0])
+                    pos_target_token_id = self.find_subsequence_positions(reversed_labels, reversed_target_token_id)
+                    assert pos_target_token_id != -1, "target token id sequence not found"
+                    answer_start_index = len(labels) - pos_target_token_id - len(target_token_id)
+                    answer_index = [answer_start_index + i for i in range(len(target_token_id)+1)]
+                    acc_mask = torch.zeros_like(labels)
+                    acc_mask[answer_index] = 1
+            
+                    outputs["input_ids"] = outputs["input_ids"][0, :self.Tmax] # (Tmax,)
+                    outputs["attention_mask"] = outputs["attention_mask"][0, :self.Tmax] # (Tmax,)
+                    outputs["labels"] = labels[:self.Tmax] # (Tmax,)
+                    outputs["acc_mask"] = acc_mask[:self.Tmax] # (Tmax,)
+                    filter_dsl.append(outputs)
                 
-                # Create the mask (only answer tokens) for loss
-                # reversed_labels = labels.flip(dims=[0])
-                # answer_text = self.tokenizer.sep_token + dsl[index]["answers"]["text"][0].strip() + self.tokenizer.eos_token
-                # answer_tokens = self.tokenizer(answer_text, return_tensors="pt", add_special_tokens=False)["input_ids"][0] # (k,)
-                # answer_end_index = len(labels) - self.find_subsequence_positions(reversed_labels, answer_tokens.flip(dims=[0])) - 1
-                # answer_start_index = answer_end_index - len(answer_tokens) + 1
-                # labels[:answer_start_index+1] = -100
-                # labels[answer_end_index+1:] = -100
-                
-                # Create the mask (whole instruction) for loss
-                reversed_labels = labels.flip(dims=[0])
-                target_token_id = self.tokenizer(inputs, padding=False, truncation=True, max_length=self.Tmax, return_tensors="pt")["input_ids"][0, -2] # (Tmax,)
-                pos_target_token_id = torch.where(reversed_labels == target_token_id)[0][0]
-                answer_end_index = len(labels) - pos_target_token_id - 1
-                labels[answer_end_index+2:] = -100
-                
-                # Get the range of answer text
-                reversed_labels = labels.clone().flip(dims=[0])
-                answer_text = " " + dsl[index]["answers"]["text"][0].strip()
-                target_token_id = self.tokenizer(answer_text, padding=False, truncation=True, max_length=self.Tmax, return_tensors="pt", add_special_tokens=False)["input_ids"][0] # (Tmax,)
-                reversed_target_token_id = target_token_id.clone().flip(dims=[0])
-                pos_target_token_id = self.find_subsequence_positions(reversed_labels, reversed_target_token_id)
-                assert pos_target_token_id != -1, "target token id sequence not found"
-                answer_start_index = len(labels) - pos_target_token_id - len(target_token_id)
-                answer_index = [answer_start_index + i for i in range(len(target_token_id)+1)]
-                acc_mask = torch.zeros_like(labels)
-                acc_mask[answer_index] = 1
-        
-                outputs["input_ids"] = outputs["input_ids"][0, :self.Tmax] # (Tmax,)
-                outputs["attention_mask"] = outputs["attention_mask"][0, :self.Tmax] # (Tmax,)
-                outputs["labels"] = labels[:self.Tmax] # (Tmax,)
-                outputs["acc_mask"] = acc_mask[:self.Tmax] # (Tmax,)
-                filter_dsl.append(outputs)
+                else:
+                    answer_text = " " + dsl[index]["answers"]["text"][0].strip() + self.tokenizer.eos_token
+                    target_token_id = self.tokenizer(answer_text, padding=False, truncation=True, max_length=self.Tmax, return_tensors="pt", add_special_tokens=False)["input_ids"][0] # (Tmax,)
+                    outputs["input_ids"] = outputs["input_ids"][0, :self.Tmax] # (Tmax,)
+                    outputs["attention_mask"] = outputs["attention_mask"][0, :self.Tmax] # (Tmax,)
+                    outputs["labels"] = target_token_id[:self.Tmax] # (Tmax,)
+                    filter_dsl.append(outputs)
+                      
         return filter_dsl
     
     def __len__(self) -> int:
@@ -235,7 +251,7 @@ def main_xnli(model_name: str):
 def main_xqad(model_name: str):
     train_ds = XQADatasetHF(model_name=model_name, lang="en", max_context_len=512, frac=1.0, is_train=True)
     eval_ds = XQADatasetHF(model_name=model_name, lang="en", max_context_len=512, frac=1.0, is_train=False)
-    print(len(train_ds), len(eval_ds))
+    print(len(eval_ds))
     print("DONE")
     
 if __name__ == "__main__":

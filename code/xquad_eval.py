@@ -1,4 +1,6 @@
 import os, wandb, torch, tqdm, sys, json, math, gc, pickle, argparse
+# if __name__ == "__main__":
+#     os.environ["CUDA_VISIBLE_DEVICES"] = "7"
 torch.manual_seed(42)   
 from pathlib import Path
 sys.path.append(Path(__file__).parent)
@@ -8,6 +10,7 @@ from utils import models_map
 from datasets import load_dataset
 from torch.utils.data import Dataset, DataLoader
 from lora_instruct_finetune import LoRAFineTuner
+from collections import Counter
 
 class Evaluator:
     def __init__(self, device: torch.device, config: dict):
@@ -30,6 +33,11 @@ class Evaluator:
         self.eval_path = Path(Path.cwd(), f"outputs/task_eval/{self.model_name_srt}_finetune_{self.task_name}/{self.method}/{self.int_by}/{self.config['ckpt_name'].split('/')[0]}_train_{self.train_lang}_finetune_{self.finetune_lang}_eval_{self.eval_lang}_result.txt")
         if not self.eval_path.parent.exists():
             Path.mkdir(self.eval_path.parent, parents=True, exist_ok=True)
+        
+        self.Tmax = self.config_data["config"]["max_context_length"]
+        self.eval_ds = XQADatasetHF(model_name=self.model_name, lang=self.eval_lang, max_context_len=self.Tmax, frac=self.config["eval_frac"], is_train=False)
+        self.eval_dl = DataLoader(self.eval_ds, batch_size=self.config["batch_size"], shuffle=False, drop_last=True)
+        self.tokenizer = self.eval_ds.tokenizer
         
     def _get_intervene_config(self, intervene_lang: str, is_activate: bool) -> dict:
         """intervene_lang = yy"""
@@ -63,27 +71,89 @@ class Evaluator:
         self.model.eval()
         with torch.no_grad(), torch.amp.autocast(device_type="cuda"):
             out = self.model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=intervene_config)["logits"]
-        return out # (b, c)
+        return out # (b, T, V)
     
-    def _calc_acc_batch(self, pred_outputs: torch.tensor, true_outputs: torch.tensor) -> torch.tensor:
-        pred_outputs = pred_outputs.to(self.device)
-        true_outputs = true_outputs.to(self.device)
-        assert pred_outputs.dim() == 2, f"pred_outputs.shape = {pred_outputs.shape} must be (b, c)"
-        assert true_outputs.dim() == 1, f"true_outputs.shape = {true_outputs.shape} must be (b,)"
-        acc = (pred_outputs.argmax(dim=-1) == true_outputs).to(torch.float32).mean()
-        return torch.tensor(acc.item()) # returns the tensor as a scalar number 
+    def _generate_batch(self, batch: dict, intervene_config: Union[dict, None]) -> dict:
+        input_ids = batch["input_ids"].to(self.device) # (b, T)
+        attention_mask = batch["attention_mask"].to(self.device) # (b, T)
+        answer_ids = batch["labels"].to(self.device) # (b, T)
+        assert input_ids.shape[0] == 1, "Batch size should be 1"
+        
+        pred_token_list = []
+        for i in range(self.Tmax):
+            out = self._forward_batch(batch=batch, intervene_config=intervene_config) # (b, T, V)
+            pred_token_id = int(out[0, -1, :].argmax().item()) # scalar 
+            input_ids = torch.concat([input_ids.squeeze(), torch.tensor([pred_token_id], device=self.device)], dim=0).unsqueeze(dim=0)
+            attention_mask = torch.concat([attention_mask.squeeze(), torch.tensor([1], device=self.device)], dim=0).unsqueeze(dim=0)
+            input_ids = input_ids[:, -self.Tmax:]
+            attention_mask = attention_mask[:, -self.Tmax:]
+            batch = {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask
+            }
+            pred_token_list.append(pred_token_id)
+            if pred_token_id == self.tokenizer.eos_token_id:
+                break
+        
+        true_token_list = answer_ids[0].tolist()
+        return {"true_tokens": true_token_list, "pred_tokens": pred_token_list}
     
-    def _evaluate_dataloader(self, intervene_config: Union[dict, None]) -> float:
+    def _calc_metrics_batch(self, true_tokens: List[int], pred_tokens: List[int]) -> dict:
+        # Exact Match: True if the sequences are identical
+        exact_match = int(true_tokens == pred_tokens)
+        
+        # Count occurrences of tokens
+        true_counter = Counter(true_tokens)
+        pred_counter = Counter(pred_tokens)
+        
+        # Calculate intersection count (min of counts for each token)
+        common_tokens = sum((true_counter & pred_counter).values())
+        
+        # Precision: |True ∩ Pred| / |Pred|
+        precision = common_tokens / len(pred_tokens) if pred_tokens else 0.0
+        
+        # Recall: |True ∩ Pred| / |True|
+        recall = common_tokens / len(true_tokens) if true_tokens else 0.0
+        
+        # F1 Score: 2 * (Precision * Recall) / (Precision + Recall)
+        if precision + recall > 0:
+            f1_score = 2 * (precision * recall) / (precision + recall)
+        else:
+            f1_score = 0.0
+        
+        return {
+            "exact_match": exact_match,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1_score
+        }
+        
+    def _compute_average_metrics(self, metrics_list: List[dict]) -> dict:
+        # Initialize an empty dictionary to store the sum of each metric
+        total_metrics = {key: 0.0 for key in metrics_list[0]}
+        
+        # Sum up the metrics for all examples
+        for metrics in metrics_list:
+            for key, value in metrics.items():
+                total_metrics[key] += value
+        
+        # Divide by the number of examples to get the average
+        num_examples = len(metrics_list)
+        avg_metrics = {key: total / num_examples for key, total in total_metrics.items()}
+        return avg_metrics
+    
+    def _evaluate_dataloader(self, intervene_config: Union[dict, None]) -> dict:
         with tqdm.tqdm(iterable=self.eval_dl, desc=f"[EVAL] on lang {self.eval_lang}", total=len(self.eval_dl), unit="batch", colour="green") as pbar:
-            acc_list = []
+            metrics_list = []
             for i, batch in enumerate(pbar):   
-                pred_out = self._forward_batch(batch=batch, intervene_config=intervene_config) # (b, c)  
-                true_out = batch["labels"] # (b,)   
-                acc = self._calc_acc_batch(pred_outputs=pred_out, true_outputs=true_out)
-                acc_list.append(acc)
-                pbar.set_postfix({"acc": f"{acc:.3f}"})  
-        eval_acc = sum(acc_list)/len(acc_list)
-        return float(eval_acc)
+                pred_out = self._generate_batch(batch=batch, intervene_config=intervene_config) # (b, T, V)     
+                metrics = self._calc_metrics_batch(true_tokens=pred_out["true_tokens"], pred_tokens=pred_out["pred_tokens"])
+                metrics_list.append(metrics)
+                print("True: ", self.tokenizer.decode(pred_out["true_tokens"])) 
+                print("Pred: ", self.tokenizer.decode(pred_out["pred_tokens"]))
+                print(metrics)
+        
+        return self._compute_average_metrics(metrics_list=metrics_list)
     
     def evaluate(self) -> None:
         if self.eval_path.exists():
@@ -93,21 +163,18 @@ class Evaluator:
         lang = self.eval_lang
         intervene_config = self._get_intervene_config(intervene_lang=self.eval_lang, is_activate=True)
 
-        self.eval_ds = XNLIDatasetHF(model_name=self.model_name, lang=lang, max_context_len=self.config_data["config"]["max_context_length"], frac=self.config["eval_frac"], is_train=False)
-        self.eval_dl = DataLoader(self.eval_ds, batch_size=self.config["batch_size"], shuffle=False, drop_last=True)
-        
         if self.config["is_zero_shot"]:
-            acc = self._evaluate_dataloader(intervene_config=None)
+            metrics = self._evaluate_dataloader(intervene_config=None)
             if self.train_lang == lang:
-                res1 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Direct acc: {acc}"
+                res1 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Direct acc: {metrics}"
             else:
-                res1 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Zero shot acc: {acc}"
+                res1 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Zero shot acc: {metrics}"
         else:
             res1 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Zero shot acc: NOT CALCULATED"                
             
         print(res1)
-        int_acc = self._evaluate_dataloader(intervene_config=intervene_config)
-        res2 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Intervene acc: {int_acc}"
+        int_metrics = self._evaluate_dataloader(intervene_config=intervene_config)
+        res2 = f"[RESULT] Train lang: {self.train_lang}, Finetune lang: {self.finetune_lang}, Eval lang: {self.eval_lang}, Intervene acc: {int_metrics}"
         print(res2)
         
         with open(self.eval_path, "w") as f:
@@ -133,11 +200,27 @@ if __name__ == "__main__":
         "method": args.method,
         "ckpt_name": f"checkpoint-{args.ckpt_id}/pytorch_model.bin",
         "eval_lang": args.eval_lang,
-        "batch_size": 8,
+        "batch_size": 1,
         "eval_frac": 1.0,
         "is_zero_shot": bool(args.is_zero_shot),
         "intervene_by": args.intervene_by
     }
+    # ckpt_path = "/raid/speech/soumen/MS_Research/LangSpecificNeurons/outputs/ckpt/Meta-Llama-3.1-8B_finetune_XQUAD-FT/lape/set1/en_finetune_null_1.00_5.0e-05_r64"
+    # ckpt_id = 1160
+    # eval_lang = "vi"
+    # is_zero_shot = False
+    # intervene_by = "mean_p5_act"
+    # method = "lape/set1"
+    # config = {
+    #     "config_path": Path(Path.cwd(), f"{ckpt_path}/master_config.pkl"),
+    #     "method": method,
+    #     "ckpt_name": f"checkpoint-{ckpt_id}/pytorch_model.bin",
+    #     "eval_lang": eval_lang,
+    #     "batch_size": 1,
+    #     "eval_frac": 0.1,
+    #     "is_zero_shot": is_zero_shot,
+    #     "intervene_by": intervene_by
+    # }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     main(config=config, device=device)
