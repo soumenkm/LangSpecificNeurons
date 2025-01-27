@@ -1,7 +1,7 @@
 import os, json, pickle, torch, wandb
 if __name__ == "__main__":
     wandb.login()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
     
 torch.manual_seed(42)
 from pathlib import Path
@@ -45,7 +45,7 @@ class LoRAFineTuner:
         self.output_dir = f"outputs/ckpt/{self.project_name}/{self.run_name}"
 
         self.frozen_neurons = self._get_frozen_neurons()
-        self.model = ModelForCLSWithLoRA(device=self.device, tokenizer=self.tokenizer, model_name=self.model_name, num_class=self.config["num_class"], lora_rank=self.config["lora_rank"], lora_alpha=self.config["lora_alpha"], quant_config=self.quant_config, frozen_neurons=self.frozen_neurons)
+        self.model = ModelForCLSWithLoRA(device=self.device, tokenizer=self.tokenizer, model_name=self.model_name, sparse_alpha=None, num_class=self.config["num_class"], lora_rank=self.config["lora_rank"], lora_alpha=self.config["lora_alpha"], quant_config=self.quant_config, frozen_neurons=self.frozen_neurons)
         self.optimizer = torch.optim.AdamW(params=self.model.parameters(), lr=self.config['initial_lr'], weight_decay=self.config["weight_decay"], betas=self.config["adam_betas"])
         self.scheduler = get_linear_schedule_with_warmup(optimizer=self.optimizer,
                                                          num_warmup_steps=int(0.01 * self.num_steps), 
@@ -53,8 +53,8 @@ class LoRAFineTuner:
 
         self.train_arg_config = {
             "output_dir": self.output_dir,
-            "eval_strategy": "steps",
-            "eval_steps": max(self.batch_size, self.num_steps//self.config["num_ckpt_per_epoch"]),
+            "eval_strategy": "no",
+            # "eval_steps": max(self.batch_size, self.num_steps//self.config["num_ckpt_per_epoch"]),
             "per_device_train_batch_size": self.batch_size,
             "per_device_eval_batch_size": self.batch_size,
             "gradient_accumulation_steps": self.config["grad_acc_steps"],
@@ -82,10 +82,10 @@ class LoRAFineTuner:
             "args": self.training_args,
             "data_collator": self.data_collator,
             "train_dataset": self.train_ds,
-            "eval_dataset": self.eval_ds,
+            # "eval_dataset": self.eval_ds,
             "tokenizer": self.tokenizer,
             "optimizers": (self.optimizer, self.scheduler),
-            "compute_metrics": self.compute_metrics
+            # "compute_metrics": self.compute_metrics
         }
         self.trainer = Trainer(**self.trainer_config)
     
@@ -121,24 +121,42 @@ class LoRAFineTuner:
                 self.log({"accuracy": acc, "param_norm": total_norm})
         # Custom: End.
     
-    def _get_frozen_neurons(self) -> torch.tensor:
-        lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{self.method}/lang_neuron_data.pkl")
+    def _get_lang_neuron(self, method) -> dict:
+        lang_neuron_path = Path(Path.cwd(), f"outputs/lang_neurons/{self.model_name_srt}/{method}/lang_neuron_data.pkl")
         if lang_neuron_path.exists():
             lang_neuron = pickle.load(open(lang_neuron_path, "rb"))
             print(f"The lang neurons data is loaded from {lang_neuron_path}")
         else:
             raise ValueError(f"{lang_neuron_path} doesn't exist!")
-        
-        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])) # (4Ld, 2)
+        return lang_neuron
+    
+    def _get_frozen_neurons(self) -> torch.tensor:
         if self.finetune_lang == "null":
-            return None
+            return None 
+        
+        lang_neuron = self._get_lang_neuron(method=self.method)
+        all_neurons = torch.cartesian_prod(torch.arange(lang_neuron["L"]), torch.arange(lang_neuron["int_d"])).to(self.device) # (4Ld, 2)
+        
+        if self.finetune_lang == "all_mlp": 
+            return all_neurons # !TODO: Caution! This is temporary change to see if MLP training helps
         elif "+" in self.finetune_lang:
             lang1, lang2 = self.finetune_lang.split("+")
-            ft_index1 = lang_neuron["lang_to_neuron"][lang1] # (N, 2)
+            if "set" in lang1:
+                lang_set, lang = lang1.split("_")
+                lang_neuron1 = self._get_lang_neuron(method=f"lape/{lang_set}")
+                ft_index1 = lang_neuron1["lang_to_neuron"][lang] # (N, 2)
+            else:
+                ft_index1 = lang_neuron["lang_to_neuron"][lang1] # (N, 2)
             ft_index2 = lang_neuron["lang_to_neuron"][lang2] # (N, 2)
             ft_index = torch.cat([ft_index1, ft_index2], dim=0)
-        elif len(self.finetune_lang) == 2:
-            ft_index = lang_neuron["lang_to_neuron"][self.finetune_lang] # (N, 2)
+        
+        elif len(self.finetune_lang) in [2, 7]:
+            if "set" in self.finetune_lang:
+                lang_set, lang = self.finetune_lang.split("_")
+                lang_neuron1 = self._get_lang_neuron(method=f"lape/{lang_set}")
+                ft_index = lang_neuron1["lang_to_neuron"][lang] # (N, 2)
+            else:
+                ft_index = lang_neuron["lang_to_neuron"][self.finetune_lang] # (N, 2)
         else:
             raise ValueError("Invalid finetune lang!")
         
@@ -155,6 +173,7 @@ class LoRAFineTuner:
             "run_name": self.run_name,
             "train_arg_config": self.train_arg_config,
             "quant_config": self.quant_config,
+            "frozen_neurons": self.frozen_neurons
         }
         with open(self.output_dir + "/master_config.pkl", 'wb') as f:
             pickle.dump(config_data, f)
@@ -166,7 +185,7 @@ class LoRAFineTuner:
         config = config_data["config"]
         model_name = config["model_name"]
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, num_class=config["num_class"], lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"], quant_config=config_data["quant_config"], frozen_neurons=None)
+        model = ModelForCLSWithLoRA(device=device, tokenizer=tokenizer, model_name=model_name, sparse_alpha=None, num_class=config["num_class"], lora_rank=config["lora_rank"], lora_alpha=config["lora_alpha"], quant_config=config_data["quant_config"], frozen_neurons=config_data["frozen_neurons"])
         checkpoint_path = Path(config_path.parent, checkpoint_name)
         checkpoint = torch.load(checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint, strict=False)
@@ -177,16 +196,16 @@ class LoRAFineTuner:
     def train(self) -> None:
         self._save_config()
         print(self.model)
-        print(self.model.calc_num_lora_params())
+        self.model.calc_num_lora_params()
         self.trainer.train(resume_from_checkpoint=False)
 
 def main(model_name: str, device: torch.device) -> None:
     config = {
-        "model_name": model_name, "task_name": "XNLI-DGX4",
-        "method": "lape/set1", "lang": "en", "finetune_lang": "null", # ["en", "vi", "en+vi", "null"]
-        "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
+        "model_name": model_name, "task_name": "XNLI-FT",
+        "method": "lape/set1", "lang": "en", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
+        "num_epochs": 2, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
-        "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
+        "initial_lr": 1e-6, "num_class": 3, "lora_rank": 64, "lora_alpha": 128, "max_grad_norm": 10.0, "weight_decay": 0.1,
         "adam_betas": (0.95, 0.999), "grad_acc_steps": 1, "num_ckpt_per_epoch": 4, "is_4bit_quant": True, "fp16": False, "bf16": True,
         "wandb_log": True
     }
@@ -197,4 +216,4 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
-    main(models_map["llama3"], device=device)
+    main(models_map["aya23"], device=device)

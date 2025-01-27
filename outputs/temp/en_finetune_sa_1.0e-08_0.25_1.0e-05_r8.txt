@@ -1,0 +1,7 @@
+Evaluation Results:
+eval_loss: 0.5649151802062988
+eval_model_preparation_time: 0.0117
+eval_accuracy: 0.9233870967741935
+eval_runtime: 22.6692
+eval_samples_per_second: 22.1
+eval_steps_per_second: 2.779
