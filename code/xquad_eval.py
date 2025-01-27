@@ -56,13 +56,39 @@ class Evaluator:
         else:
             raise ValueError(f"{act_data_path} doesn't exist!")
         
-        mean_act = act_data[self.int_by].to(self.device) # (L, 4d)
         index = lang_neuron["lang_to_neuron"][lang].to(self.device) # (N, 2)
-        value = mean_act[index[:, 0], index[:, 1]] # (N,)
-        intervene_config = {
-            "indices": index,
-            "value": value if is_activate else torch.zeros_like(value)
-        }
+        if self.int_by == "zero":
+            intervene_config = {
+                "indices": index,
+                "value": torch.zeros(size=(index.shape[0],))
+            }
+        elif self.int_by == "neg1":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (-1)
+            }
+        elif self.int_by == "neg10":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (-10)
+            }
+        elif self.int_by == "pos1":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (1)
+            }
+        elif self.int_by == "pos10":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (10)
+            }
+        else:
+            mean_act = act_data[self.int_by].to(self.device) # (L, 4d)
+            value = mean_act[index[:, 0], index[:, 1]] # (N,)
+            intervene_config = {
+                "indices": index,
+                "value": value if is_activate else torch.zeros_like(value)
+            }
         return intervene_config
    
     def _forward_batch(self, batch: dict, intervene_config: Union[dict, None]) -> torch.tensor:
@@ -80,7 +106,7 @@ class Evaluator:
         assert input_ids.shape[0] == 1, "Batch size should be 1"
         
         pred_token_list = []
-        for i in range(self.Tmax):
+        for i in range(100):
             out = self._forward_batch(batch=batch, intervene_config=intervene_config) # (b, T, V)
             pred_token_id = int(out[0, -1, :].argmax().item()) # scalar 
             input_ids = torch.concat([input_ids.squeeze(), torch.tensor([pred_token_id], device=self.device)], dim=0).unsqueeze(dim=0)

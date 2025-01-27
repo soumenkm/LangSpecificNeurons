@@ -221,7 +221,10 @@ class XQADatasetHF(Dataset):
                     outputs["attention_mask"] = outputs["attention_mask"][0, :self.Tmax] # (Tmax,)
                     outputs["labels"] = labels[:self.Tmax] # (Tmax,)
                     outputs["acc_mask"] = acc_mask[:self.Tmax] # (Tmax,)
-                    filter_dsl.append(outputs)
+                    filter_dsl.append({"input_ids": outputs["input_ids"],
+                        "attention_mask": outputs["attention_mask"],
+                        "labels": outputs["labels"],
+                        "acc_mask": outputs["acc_mask"]})
                 
                 else:
                     answer_text = " " + dsl[index]["answers"]["text"][0].strip() + self.tokenizer.eos_token
@@ -229,7 +232,9 @@ class XQADatasetHF(Dataset):
                     outputs["input_ids"] = outputs["input_ids"][0, :self.Tmax] # (Tmax,)
                     outputs["attention_mask"] = outputs["attention_mask"][0, :self.Tmax] # (Tmax,)
                     outputs["labels"] = target_token_id[:self.Tmax] # (Tmax,)
-                    filter_dsl.append(outputs)
+                    filter_dsl.append({"input_ids": outputs["input_ids"],
+                        "attention_mask": outputs["attention_mask"],
+                        "labels": outputs["labels"]})
                       
         return filter_dsl
     
