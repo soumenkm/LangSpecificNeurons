@@ -1,6 +1,6 @@
 import json, os, sys, tqdm, pickle, datetime, random
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
 import torch
 torch.manual_seed(42)
@@ -273,8 +273,8 @@ def main(model_name: str, device: torch.device) -> None:
             bnb_4bit_compute_dtype=torch.bfloat16,  
             bnb_4bit_use_double_quant=True,  
     )
-    for lang in ["te", "pa"]: 
-        for method in ["all_act"]:
+    for lang in ["bn"]: 
+        for method in ["act_stat"]:
             rel = NeuronRelevance(device=device, model_name=model_name, quant_config=quant_config, lang=lang, scoring_method=method)
             if method == "act_stat":
                 out = rel.get_act_stat_data(batch_size=4, data_frac=0.1)
