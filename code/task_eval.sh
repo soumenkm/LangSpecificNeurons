@@ -25,7 +25,12 @@
 # CUDA_VISIBLE_DEVICES=5, nohup python code/xquad_eval.py --method "act_prob_90p" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XQUAD-FT/act_prob_90p/en_finetune_null_1.00_5.0e-05_r64" --ckpt_id "1160" --eval_lang "vi" --is_zero_shot 0 --intervene_by "mean_p25_act" > lvi7.out & 
 # CUDA_VISIBLE_DEVICES=5, nohup python code/xquad_eval.py --method "act_prob_90p" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XQUAD-FT/act_prob_90p/en_finetune_null_1.00_5.0e-05_r64" --ckpt_id "1160" --eval_lang "vi" --is_zero_shot 0 --intervene_by "zero" > lvi8.out & 
 
-CUDA_VISIBLE_DEVICES=5, nohup python code/xquad_eval.py --method "lape/set1" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XQUAD-FT/lape/set1/en_finetune_null_1.00_5.0e-05_r64" --ckpt_id "1160" --eval_lang "vi" --is_zero_shot 0 --intervene_by "zero" > lhi8.out & 
+CUDA_VISIBLE_DEVICES=4, nohup python code/task_eval.py --method "lape/set1" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-FT/lape/set1/en_finetune_null_0.25_1.0e-05_r8" --ckpt_id "12268" --eval_lang "vi" --is_zero_shot 0 --intervene_by "zero" > zvi1.out & 
+CUDA_VISIBLE_DEVICES=4, nohup python code/task_eval.py --method "lape/set6" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-FT/lape/set1/en_finetune_null_0.25_1.0e-05_r8" --ckpt_id "12268" --eval_lang "hi" --is_zero_shot 0 --intervene_by "zero" > zhi1.out & 
+CUDA_VISIBLE_DEVICES=4, nohup python code/task_eval.py --method "lape/set6" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-FT/lape/set1/en_finetune_null_0.25_1.0e-05_r8" --ckpt_id "12268" --eval_lang "ur" --is_zero_shot 0 --intervene_by "zero" > zur1.out & 
+CUDA_VISIBLE_DEVICES=4, nohup python code/task_eval.py --method "act_prob_90p" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-FT/lape/set1/en_finetune_null_0.25_1.0e-05_r8" --ckpt_id "12268" --eval_lang "vi" --is_zero_shot 0 --intervene_by "zero" > zvi2.out & 
+CUDA_VISIBLE_DEVICES=4, nohup python code/task_eval.py --method "act_prob_90p" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-FT/lape/set1/en_finetune_null_0.25_1.0e-05_r8" --ckpt_id "12268" --eval_lang "hi" --is_zero_shot 0 --intervene_by "zero" > zhi2.out & 
+CUDA_VISIBLE_DEVICES=4, nohup python code/task_eval.py --method "act_prob_90p" --ckpt_path "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-FT/lape/set1/en_finetune_null_0.25_1.0e-05_r8" --ckpt_id "12268" --eval_lang "ur" --is_zero_shot 0 --intervene_by "zero" > zur2.out & 
 
 
 # CUDA_VISIBLE_DEVICES=3, nohup python code/xquad_eval.py --method "act_prob_90p" --ckpt_path "outputs/ckpt/Mistral-Nemo-Base-2407_finetune_XQUAD-FT/act_prob_90p/en_finetune_null_1.00_5.0e-05_r64" --ckpt_id "2320" --eval_lang "hi" --is_zero_shot 1 --intervene_by "mean_mu_act" > lhi1.out & 

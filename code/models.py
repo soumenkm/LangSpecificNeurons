@@ -245,11 +245,11 @@ class ModelForCLS(torch.nn.Module):
         if labels is not None:
             labels = labels.to(self.device)  
             loss = self.loss_fn(out, labels) 
-            acc = (out.argmax(dim=-1) == labels).to(torch.float32).mean()
+            acc = (out.argmax(dim=-1) == labels).to(torch.float32).mean().item()
         else:
             loss = None
             acc = None
-        return {"logits": out, "loss": loss, "acc": acc.item()}
+        return {"logits": out, "loss": loss, "acc": acc}
 
 class SparseModelForCLS(torch.nn.Module):
     def __init__(self, device: torch.device, model_name: str, num_class: int, quant_config: Union[BitsAndBytesConfig, None], alpha: float):

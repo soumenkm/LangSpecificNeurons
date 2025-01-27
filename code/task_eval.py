@@ -1,4 +1,6 @@
 import os, wandb, torch, tqdm, sys, json, math, gc, pickle, argparse
+# if __name__ == "__main__":
+#     os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 torch.manual_seed(42)   
 from pathlib import Path
 sys.path.append(Path(__file__).parent)
@@ -48,13 +50,39 @@ class Evaluator:
         else:
             raise ValueError(f"{act_data_path} doesn't exist!")
         
-        mean_act = act_data[self.int_by].to(self.device) # (L, 4d)
         index = lang_neuron["lang_to_neuron"][lang].to(self.device) # (N, 2)
-        value = mean_act[index[:, 0], index[:, 1]] # (N,)
-        intervene_config = {
-            "indices": index,
-            "value": value if is_activate else torch.zeros_like(value)
-        }
+        if self.int_by == "zero":
+            intervene_config = {
+                "indices": index,
+                "value": torch.zeros(size=(index.shape[0],))
+            }
+        elif self.int_by == "neg1":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (-1)
+            }
+        elif self.int_by == "neg10":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (-10)
+            }
+        elif self.int_by == "pos1":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (1)
+            }
+        elif self.int_by == "pos10":
+            intervene_config = {
+                "indices": index,
+                "value": torch.ones(size=(index.shape[0],)) * (10)
+            }
+        else:
+            mean_act = act_data[self.int_by].to(self.device) # (L, 4d)
+            value = mean_act[index[:, 0], index[:, 1]] # (N,)
+            intervene_config = {
+                "indices": index,
+                "value": value if is_activate else torch.zeros_like(value)
+            }
         return intervene_config
    
     def _forward_batch(self, batch: dict, intervene_config: Union[dict, None]) -> torch.tensor:
@@ -138,6 +166,22 @@ if __name__ == "__main__":
         "is_zero_shot": bool(args.is_zero_shot),
         "intervene_by": args.intervene_by
     }
+    # ckpt_path = "outputs/ckpt/Meta-Llama-3.1-8B_finetune_XNLI-FT/lape/set1/en_finetune_null_0.25_1.0e-05_r8"
+    # ckpt_id = 12268
+    # eval_lang = "vi"
+    # is_zero_shot = False
+    # intervene_by = "zero"
+    # method = "lape/set1"
+    # config = {
+    #     "config_path": Path(Path.cwd(), f"{ckpt_path}/master_config.pkl"),
+    #     "method": method,
+    #     "ckpt_name": f"checkpoint-{ckpt_id}/pytorch_model.bin",
+    #     "eval_lang": eval_lang,
+    #     "batch_size": 8,
+    #     "eval_frac": 1.0,
+    #     "is_zero_shot": bool(is_zero_shot),
+    #     "intervene_by": intervene_by
+    # }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     main(config=config, device=device)
