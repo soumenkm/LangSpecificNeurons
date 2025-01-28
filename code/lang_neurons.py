@@ -225,7 +225,7 @@ class LangNeuron:
 
 def main(model_name: str, device: torch.device) -> None:
     methods = ["act_prob_zero", "act_abs_mean", "act_prob_mean", "act_prob_95p", "lape/set1"]
-    lang_neuron = LangNeuron(device=device, model_name=model_name, lang_list=lang_map["set1"], scoring_method="lape/set1")
+    lang_neuron = LangNeuron(device=device, model_name=model_name, lang_list=lang_map["set6"], scoring_method="lape/set6")
     lang_neuron.get_lang_specific_neurons_dist(is_plot=True)
     lang_neuron.get_layerwise_neurons_dist(is_plot=True)
     lang_neuron.get_neurons_overlap(is_plot=True)
