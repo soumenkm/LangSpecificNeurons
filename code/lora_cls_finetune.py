@@ -1,7 +1,7 @@
 import os, json, pickle, torch, wandb
 if __name__ == "__main__":
     wandb.login()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
     
 torch.manual_seed(42)
 from pathlib import Path
@@ -202,12 +202,12 @@ class LoRAFineTuner:
 def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XNLI-FT",
-        "method": "act_prob_90p", "lang": "en", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
-        "num_epochs": 2, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
+        "method": "act_prob_90p", "lang": "vi", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
+        "num_epochs": 1, "num_steps": None, "batch_size": 4, "max_context_length": 256, # steps are auto calculated
         "train_frac": 0.25, "eval_frac": 0.1,
         "initial_lr": 1e-6, "num_class": 3, "lora_rank": 64, "lora_alpha": 128, "max_grad_norm": 10.0, "weight_decay": 0.1,
         "adam_betas": (0.95, 0.999), "grad_acc_steps": 1, "num_ckpt_per_epoch": 4, "is_4bit_quant": True, "fp16": False, "bf16": True,
-        "wandb_log": False
+        "wandb_log": True
     }
     trainer = LoRAFineTuner(device=device, config=config)
     trainer.train()
