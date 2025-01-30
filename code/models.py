@@ -250,7 +250,7 @@ class ModelForCLS(torch.nn.Module):
             loss = self.loss_fn(out, labels) 
         else:
             loss = None
-        return {"logits": out, "loss": loss}
+        return {"logits": out, "loss": loss, "acc": 0}
     
     def calc_num_params(self) -> None:
         # Check if the requires_grad are set correctly
@@ -341,7 +341,7 @@ class SparseModelForCLS(torch.nn.Module):
             total_loss = 0
         
         self.remove_hook()
-        return {"logits": out, "loss": total_loss}
+        return {"logits": out, "loss": total_loss, "acc": 0}
 
 class ModelForCLSWithLoRA(torch.nn.Module):
     def __init__(self, device: torch.device, tokenizer: AutoTokenizer, model_name: str, sparse_alpha: Union[float, None], num_class: int, lora_rank: int, lora_alpha: float, quant_config: Union[None, BitsAndBytesConfig], frozen_neurons: Union[str, torch.tensor], apply_lora_mlp: bool):

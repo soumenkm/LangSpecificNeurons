@@ -1,7 +1,7 @@
 import os, json, pickle, torch, wandb
 if __name__ == "__main__":
     wandb.login()
-    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
     
 torch.manual_seed(42)
 from pathlib import Path
@@ -181,10 +181,10 @@ def main(model_name: str, device: torch.device) -> None:
         "model_name": model_name, "task_name": "XNLI-Test",
         "method": "random_lora_mlp", "lang": "en", # ["apply_lora_mlp", "random_lora_mlp", "no_lora_mlp", "only_cls"]
         "num_epochs": 1, "num_steps": None, "batch_size": 8, "max_context_length": 256, # steps are auto calculated
-        "train_frac": 0.25, "eval_frac": 0.1,
+        "train_frac": 0.0025, "eval_frac": 0.1,
         "initial_lr": 1e-5, "num_class": 3, "lora_rank": 8, "lora_alpha": 16, "max_grad_norm": 10.0, "weight_decay": 0.1,
         "adam_betas": (0.95, 0.999), "grad_acc_steps": 1, "num_ckpt_per_epoch": 4, "is_4bit_quant": True, "fp16": False, "bf16": True,
-        "wandb_log": True
+        "wandb_log": False
     }
     trainer = LoRAFineTuner(device=device, config=config)
     trainer.train()
@@ -193,4 +193,4 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
-    main(models_map["llama3"], device=device)
+    main(models_map["mistral-nemo"], device=device)

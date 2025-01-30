@@ -43,7 +43,9 @@ class XNLIDatasetHF(Dataset):
                     outputs["input_ids"] = outputs["input_ids"][0, :self.Tmax] # (Tmax,)
                     outputs["attention_mask"] = outputs["attention_mask"][0, :self.Tmax] # (Tmax,)
                     outputs["labels"] = labels[0] # (scalar)
-                    filter_dsl.append(outputs)
+                    filter_dsl.append({"input_ids": outputs["input_ids"],
+                                       "attention_mask": outputs["attention_mask"],
+                                       "labels": outputs["labels"]})
         return filter_dsl
     
     def __len__(self) -> int:
