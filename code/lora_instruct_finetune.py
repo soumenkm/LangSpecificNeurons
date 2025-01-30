@@ -201,7 +201,7 @@ class LoRAFineTuner:
 def main(model_name: str, device: torch.device) -> None:
     config = {
         "model_name": model_name, "task_name": "XQUAD-FT",
-        "method": "act_prob_90p", "lang": "hi", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
+        "method": "act_prob_90p", "lang": "zh", "finetune_lang": "null", # ["en", "vi", "en+vi", "null", "set1_en"]
         "num_epochs": 10, "num_steps": None, "batch_size": 4, "max_context_length": 512, # steps are auto calculated
         "train_frac": 1.0, "eval_frac": 0.1,
         "initial_lr": 5e-5, "lora_rank": 64, "lora_alpha": 128, "max_grad_norm": 10.0, "weight_decay": 0.1,
