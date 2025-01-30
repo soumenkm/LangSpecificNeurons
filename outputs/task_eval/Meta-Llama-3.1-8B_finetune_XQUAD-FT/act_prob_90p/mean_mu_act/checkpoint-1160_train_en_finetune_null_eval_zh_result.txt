@@ -1,2 +1,0 @@
-[RESULT] Train lang: en, Finetune lang: null, Eval lang: zh, Zero shot acc: {'exact_match': 0.5588235294117647, 'precision': 0.793795577025525, 'recall': 0.7892119117981512, 'f1_score': 0.775266368355338}
-[RESULT] Train lang: en, Finetune lang: null, Eval lang: zh, Intervene acc: {'exact_match': 0.6092436974789915, 'precision': 0.8263790784063894, 'recall': 0.8222192985703076, 'f1_score': 0.8067085843855198}
