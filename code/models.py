@@ -1,6 +1,6 @@
 import os, torch, json, sys
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 torch.manual_seed(42)
 from pathlib import Path
@@ -173,7 +173,10 @@ class ModelForMLMWithIntervention(torch.nn.Module):
             self.remove_hook()
         else:
             prediction_output = self.model(input_ids=input_ids, attention_mask=attention_mask, labels=labels) # (b, c)
-        return prediction_output
+        
+        loss = torch.nn.functional.cross_entropy(prediction_output["logits"].flatten(0,1).to(self.device), labels.flatten().to(self.device))
+        
+        return {"logits": prediction_output["logits"], "loss": loss}
 
 class LoRALayer(torch.nn.Module):
     def __init__(self, rank: int, alpha: float, d_in: int, d_out: int, mask_A: Union[torch.Tensor, None], mask_B: Union[torch.Tensor, None]):  
@@ -719,11 +722,31 @@ def main_cls(model_name: str, device: torch.device) -> None:
     print(out1["logits"].sum(), out1["loss"]) 
     print(out2["logits"].sum(), out2["loss"])
 
+def main_mlm(model_name: str, device: torch.device) -> None:
+    quant_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type='nf4',  
+            bnb_4bit_compute_dtype=torch.bfloat16,  
+            bnb_4bit_use_double_quant=True,  
+    )
+    model = ModelForMLMWithIntervention(device=device, model_name=model_name, quant_config=quant_config).to(device)
+    batch = model.tokenizer("I love machine learning. Do you also love machine", return_tensors="pt")
+    labels = batch["input_ids"].to(device) # (b, T)
+    input_ids = batch["input_ids"].to(device) # (b, T)
+    attention_mask = batch["attention_mask"].to(device) # (b, T)
+    print(model)
+    model.eval()
+    with torch.autocast("cuda"):
+        out = model(input_ids=input_ids, attention_mask=attention_mask, intervene_config=None, labels=labels) # (b, c)
+    print(out["logits"].max(), out["logits"].min(), out["loss"])
+     
+
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using {device}...")
     
-    main_clm(models_map["llama3"], device=device)
+    # main_clm(models_map["llama3"], device=device)
+    main_mlm(models_map["llama3"], device=device)
     # main_cls(models_map["aya23"], device=device)
     # main_lora("bigscience/bloomz-7b1", device=device)
     

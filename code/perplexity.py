@@ -1,6 +1,6 @@
 import json, os, sys, tqdm, pickle, datetime, math, random
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 import torch
 torch.manual_seed(42)
@@ -87,7 +87,7 @@ class Perplexity:
         loss_list = []
         with tqdm.tqdm(iterable=dl, desc=desc, unit=" batches", colour="green") as pbar:
             for input_dict in pbar:
-                out_dict = self.model(input_dict["input_ids"], input_dict["attention_mask"], intervene_config=intervene_config, labels=input_dict["labels"])
+                out_dict = self.model(input_dict["input_ids"].to(self.device), input_dict["attention_mask"].to(self.device), intervene_config=intervene_config, labels=input_dict["labels"])
                 logits1 = out_dict["logits"] # (b, Tmax, V) 
                 target_ids1 = input_dict["labels"] # (b, Tmax)
                 loss = out_dict["loss"] # scalar
@@ -158,10 +158,10 @@ class Perplexity:
         
 def main(model_name: str, lang_set: str, device: torch.device) -> None:
     ppx_config = {
-        "max_context_len": 512,
+        "max_context_len": 256,
         "batch_size": 4,
         "method": "lape/set1",
-        "data_frac": 0.0001
+        "data_frac": 0.001
     }
     quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
