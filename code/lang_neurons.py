@@ -1,6 +1,6 @@
 import os, torch, sys, tqdm, pickle, datetime
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "7"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
 
 torch.manual_seed(42)
 from pathlib import Path

@@ -156,12 +156,12 @@ class Perplexity:
         plt.savefig(str(save_path), format='png', dpi=300)
         plt.clf()
         
-def main(model_name: str, lang_set: str, device: torch.device) -> None:
+def main(model_name: str, method: str, device: torch.device) -> None:
     ppx_config = {
         "max_context_len": 256,
         "batch_size": 4,
-        "method": "lape/set1",
-        "data_frac": 0.001
+        "method": method,
+        "data_frac": 0.0002
     }
     quant_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -178,5 +178,5 @@ if __name__ == "__main__":
     print(f"Using {device}...")
     
     methods = ["act_prob_zero", "act_abs_mean", "grad_act", "act_prob_mean", "act_prob_95p", "act_abs_std"]
-    main(model_name=models_map["llama3"], lang_set="lape/set1", device=device)
+    main(model_name=models_map["llama3"], method="lape/set6", device=device)
     
