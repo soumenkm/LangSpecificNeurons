@@ -1,6 +1,6 @@
 import json, os, sys, tqdm, pickle, datetime, math, random
 if __name__ == "__main__":
-    os.environ["CUDA_VISIBLE_DEVICES"] = "4"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 import torch
 torch.manual_seed(42)
@@ -172,6 +172,7 @@ def main(model_name: str, method: str, device: torch.device) -> None:
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = ModelForMLMWithIntervention(device=device, model_name=model_name, quant_config=quant_config).to(device)
     ppx = Perplexity(device=device, tokenizer=tokenizer, model=model, model_name=model_name, ppx_config=ppx_config)
+    print("DONE")
     
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
